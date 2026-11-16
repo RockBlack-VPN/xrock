@@ -567,6 +567,7 @@ func (a *app) routes(embedded fs.FS) http.Handler {
 	mux.HandleFunc("/api/select", a.handleSelect)
 	mux.HandleFunc("/api/test", a.handleTest)
 	mux.HandleFunc("/api/providers/update", a.handleProviderUpdate)
+	mux.HandleFunc("/api/subscription", a.handleSubscriptionAPI)
 	mux.HandleFunc("/api/sys", a.handleSys)
 	mux.HandleFunc("/api/asn", a.handleASN)
 	mux.HandleFunc("/api/versions", a.handleVersions)

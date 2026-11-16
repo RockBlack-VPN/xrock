@@ -280,6 +280,346 @@
   --flag-bg: #333a48;
 }
 
+/* Океан — тёмно-бирюзовая, голубой акцент. */
+:root[data-theme="ocean"] {
+  color-scheme: dark;
+  --bg: #06121a;
+  --bg-2: #081821;
+  --glow: #0d2837;
+  --sidebar-top: #06131b;
+  --card: #0a1a24;
+  --card-2: #0f2330;
+  --soft: #0b1e29;
+  --inset: #081721;
+  --input: #081721;
+  --code-bg: #06131b;
+  --log-bg: #051018;
+  --chip2: #0f2a38;
+  --bar-bg: #0f2a38;
+  --hover: #0c2230;
+  --row-hover: #0b1f2b;
+  --icon-btn-hover: #0f2a38;
+  --btn-hover: #102b3a;
+  --btn-hover-line: #1d4356;
+  --line: #143242;
+  --line-soft: #102938;
+  --line-strong: #1b4256;
+  --scroll: #17415a;
+  --scroll-hover: #1f5676;
+  --seg-active: #12405c;
+  --txt: #e3f6ff;
+  --txt-2: #cdeaf7;
+  --muted: #82a8bb;
+  --dim: #5c8299;
+  --accent: #22d3ee;
+  --accent-rgb: 34, 211, 238;
+  --accent-2: #0e9bb5;
+  --accent-txt: #9be9f7;
+  --accent-line: #1e7f95;
+  --ok: #34d399;
+  --ok-rgb: 52, 211, 153;
+  --ok-txt: #8ff0c8;
+  --warn: #fbbf24;
+  --warn-rgb: 251, 191, 36;
+  --warn-txt: #ffd98a;
+  --bad: #fb7185;
+  --bad-rgb: 251, 113, 133;
+  --bad-txt: #ffb1bd;
+  --bar-to: #5eead4;
+  --bar-warn-to: #f7a23a;
+  --bar-bad-to: #ff8fa0;
+  --on-accent: #04222c;
+  --btn-primary-1: #14b8cb;
+  --btn-primary-2: #0b8697;
+  --btn-primary-h1: #22c9dd;
+  --btn-primary-h2: #0d93a4;
+  --btn-primary-line: #1fc3d8;
+  --danger-bg: #2a1622;
+  --danger-bg-2: #20111b;
+  --danger-line: #4a2536;
+  --danger-line-hover: #6b3448;
+  --topbar-bg: rgba(6, 18, 26, .9);
+  --scrim-bg: rgba(1, 6, 10, .7);
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, .5);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, .65);
+  --inset-hi: rgba(255, 255, 255, .03);
+  --inset-hi-strong: rgba(255, 255, 255, .12);
+  --flag-line: rgba(255, 255, 255, .18);
+  --flag-bg: #081821;
+}
+
+/* Изумруд — тёмно-зелёная. */
+:root[data-theme="emerald"] {
+  color-scheme: dark;
+  --bg: #06120e;
+  --bg-2: #081812;
+  --glow: #0d2a20;
+  --sidebar-top: #06131a;
+  --card: #0a1a15;
+  --card-2: #0f241b;
+  --soft: #0b1f18;
+  --inset: #081812;
+  --input: #081812;
+  --code-bg: #06130f;
+  --log-bg: #05100c;
+  --chip2: #0f2a20;
+  --bar-bg: #0f2a20;
+  --hover: #0c231a;
+  --row-hover: #0b2017;
+  --icon-btn-hover: #0f2a20;
+  --btn-hover: #102b21;
+  --btn-hover-line: #1d4335;
+  --line: #143226;
+  --line-soft: #10291f;
+  --line-strong: #1b4232;
+  --scroll: #17412f;
+  --scroll-hover: #1f5640;
+  --seg-active: #12402f;
+  --txt: #e6fbf1;
+  --txt-2: #d0f2e3;
+  --muted: #84b8a2;
+  --dim: #5e8b78;
+  --accent: #34d399;
+  --accent-rgb: 52, 211, 153;
+  --accent-2: #0f9d6b;
+  --accent-txt: #a7f3d0;
+  --accent-line: #1f8a66;
+  --ok: #86efac;
+  --ok-rgb: 134, 239, 172;
+  --ok-txt: #bbf7d0;
+  --warn: #fcd34d;
+  --warn-rgb: 252, 211, 77;
+  --warn-txt: #ffe6a3;
+  --bad: #fb7185;
+  --bad-rgb: 251, 113, 133;
+  --bad-txt: #ffb1bd;
+  --bar-to: #5eead4;
+  --bar-warn-to: #f7b23a;
+  --bar-bad-to: #ff8fa0;
+  --on-accent: #052017;
+  --btn-primary-1: #10b981;
+  --btn-primary-2: #0b8f62;
+  --btn-primary-h1: #1dc492;
+  --btn-primary-h2: #0c9a69;
+  --btn-primary-line: #2ad3a0;
+  --danger-bg: #2a1622;
+  --danger-bg-2: #20111b;
+  --danger-line: #4a2536;
+  --danger-line-hover: #6b3448;
+  --topbar-bg: rgba(6, 18, 14, .9);
+  --scrim-bg: rgba(1, 8, 5, .7);
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, .5);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, .65);
+  --inset-hi: rgba(255, 255, 255, .03);
+  --inset-hi-strong: rgba(255, 255, 255, .12);
+  --flag-line: rgba(255, 255, 255, .18);
+  --flag-bg: #081812;
+}
+
+/* Золото — тёплая тёмная с золотым акцентом. */
+:root[data-theme="gold"] {
+  color-scheme: dark;
+  --bg: #12100a;
+  --bg-2: #17140c;
+  --glow: #262010;
+  --sidebar-top: #141109;
+  --card: #1d1810;
+  --card-2: #262017;
+  --soft: #201a11;
+  --inset: #1a150e;
+  --input: #1a150e;
+  --code-bg: #141009;
+  --log-bg: #110e08;
+  --chip2: #2a2318;
+  --bar-bg: #2a2318;
+  --hover: #241d13;
+  --row-hover: #221b12;
+  --icon-btn-hover: #2a2318;
+  --btn-hover: #2c2418;
+  --btn-hover-line: #4a3e29;
+  --line: #3a3223;
+  --line-soft: #2e2719;
+  --line-strong: #4a3e29;
+  --scroll: #453a26;
+  --scroll-hover: #5c4d33;
+  --seg-active: #433721;
+  --txt: #f7f1e3;
+  --txt-2: #eadfc7;
+  --muted: #bdae90;
+  --dim: #8d7e63;
+  --accent: #e6b34a;
+  --accent-rgb: 230, 179, 74;
+  --accent-2: #c08f28;
+  --accent-txt: #f5d28a;
+  --accent-line: #a98430;
+  --ok: #6ee7a8;
+  --ok-rgb: 110, 231, 168;
+  --ok-txt: #a7f3c9;
+  --warn: #fbbf24;
+  --warn-rgb: 251, 191, 36;
+  --warn-txt: #ffd98a;
+  --bad: #f87171;
+  --bad-rgb: 248, 113, 113;
+  --bad-txt: #ffb4b4;
+  --bar-to: #8ee6b4;
+  --bar-warn-to: #f0a63a;
+  --bar-bad-to: #ff9a5b;
+  --on-accent: #1a1408;
+  --btn-primary-1: #d9a53c;
+  --btn-primary-2: #b9862a;
+  --btn-primary-h1: #e6b34a;
+  --btn-primary-h2: #c4922f;
+  --btn-primary-line: #e8bf63;
+  --danger-bg: #2e1a16;
+  --danger-bg-2: #241412;
+  --danger-line: #4d2a24;
+  --danger-line-hover: #6e3c33;
+  --topbar-bg: rgba(18, 16, 10, .9);
+  --scrim-bg: rgba(6, 5, 2, .7);
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, .5);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, .65);
+  --inset-hi: rgba(255, 255, 255, .03);
+  --inset-hi-strong: rgba(255, 255, 255, .1);
+  --flag-line: rgba(255, 255, 255, .2);
+  --flag-bg: #1a150e;
+}
+
+/* Аметист — тёмно-фиолетовая. */
+:root[data-theme="violet"] {
+  color-scheme: dark;
+  --bg: #0b0817;
+  --bg-2: #0f0b1e;
+  --glow: #1e1638;
+  --sidebar-top: #0b0818;
+  --card: #14101f;
+  --card-2: #1b1630;
+  --soft: #161125;
+  --inset: #100c1c;
+  --input: #100c1c;
+  --code-bg: #0c0917;
+  --log-bg: #0a0713;
+  --chip2: #1e1836;
+  --bar-bg: #1e1836;
+  --hover: #191330;
+  --row-hover: #171129;
+  --icon-btn-hover: #1e1836;
+  --btn-hover: #201839;
+  --btn-hover-line: #362a5a;
+  --line: #2a2240;
+  --line-soft: #221b36;
+  --line-strong: #362a5a;
+  --scroll: #322852;
+  --scroll-hover: #45376f;
+  --seg-active: #2f2553;
+  --txt: #efe9ff;
+  --txt-2: #ddd3f8;
+  --muted: #a99cc9;
+  --dim: #7f739e;
+  --accent: #a78bfa;
+  --accent-rgb: 167, 139, 250;
+  --accent-2: #7c5cf0;
+  --accent-txt: #d8ccff;
+  --accent-line: #6d54c9;
+  --ok: #34d399;
+  --ok-rgb: 52, 211, 153;
+  --ok-txt: #8ff0c8;
+  --warn: #fbbf24;
+  --warn-rgb: 251, 191, 36;
+  --warn-txt: #ffd98a;
+  --bad: #fb7185;
+  --bad-rgb: 251, 113, 133;
+  --bad-txt: #ffb1bd;
+  --bar-to: #67e8f9;
+  --bar-warn-to: #f7a23a;
+  --bar-bad-to: #ff8fa0;
+  --on-accent: #150b2e;
+  --btn-primary-1: #8b5cf6;
+  --btn-primary-2: #6d3fe0;
+  --btn-primary-h1: #9a71f8;
+  --btn-primary-h2: #7a4ae8;
+  --btn-primary-line: #a78bfa;
+  --danger-bg: #2a1626;
+  --danger-bg-2: #20111d;
+  --danger-line: #4a253f;
+  --danger-line-hover: #6b3459;
+  --topbar-bg: rgba(11, 8, 23, .9);
+  --scrim-bg: rgba(3, 2, 8, .7);
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, .55);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, .68);
+  --inset-hi: rgba(255, 255, 255, .03);
+  --inset-hi-strong: rgba(255, 255, 255, .12);
+  --flag-line: rgba(255, 255, 255, .18);
+  --flag-bg: #100c1c;
+}
+
+/* Роза — тёмная с розово-красным акцентом. */
+:root[data-theme="rose"] {
+  color-scheme: dark;
+  --bg: #140910;
+  --bg-2: #1a0c14;
+  --glow: #2e1220;
+  --sidebar-top: #150a11;
+  --card: #1e0f17;
+  --card-2: #28141f;
+  --soft: #23111a;
+  --inset: #1a0d14;
+  --input: #1a0d14;
+  --code-bg: #140910;
+  --log-bg: #11070c;
+  --chip2: #2c1520;
+  --bar-bg: #2c1520;
+  --hover: #26131c;
+  --row-hover: #221118;
+  --icon-btn-hover: #2c1520;
+  --btn-hover: #2e1620;
+  --btn-hover-line: #4d2537;
+  --line: #3a1d29;
+  --line-soft: #2e1722;
+  --line-strong: #4d2537;
+  --scroll: #472338;
+  --scroll-hover: #61304b;
+  --seg-active: #46202f;
+  --txt: #ffeef3;
+  --txt-2: #f6d9e2;
+  --muted: #c79aa9;
+  --dim: #946d7a;
+  --accent: #fb7185;
+  --accent-rgb: 251, 113, 133;
+  --accent-2: #e11d48;
+  --accent-txt: #ffc2cb;
+  --accent-line: #b8435a;
+  --ok: #34d399;
+  --ok-rgb: 52, 211, 153;
+  --ok-txt: #8ff0c8;
+  --warn: #fbbf24;
+  --warn-rgb: 251, 191, 36;
+  --warn-txt: #ffd98a;
+  --bad: #ff9f6e;
+  --bad-rgb: 255, 159, 110;
+  --bad-txt: #ffc2a3;
+  --bar-to: #f0abfc;
+  --bar-warn-to: #f7a23a;
+  --bar-bad-to: #ffb08a;
+  --on-accent: #2a0710;
+  --btn-primary-1: #f43f5e;
+  --btn-primary-2: #d31f43;
+  --btn-primary-h1: #fb5c76;
+  --btn-primary-h2: #e02a4d;
+  --btn-primary-line: #fb7185;
+  --danger-bg: #33151d;
+  --danger-bg-2: #281017;
+  --danger-line: #4f222c;
+  --danger-line-hover: #713242;
+  --topbar-bg: rgba(20, 9, 16, .9);
+  --scrim-bg: rgba(8, 2, 5, .72);
+  --shadow-1: 0 10px 30px rgba(0, 0, 0, .55);
+  --shadow-2: 0 24px 60px rgba(0, 0, 0, .68);
+  --inset-hi: rgba(255, 255, 255, .03);
+  --inset-hi-strong: rgba(255, 255, 255, .12);
+  --flag-line: rgba(255, 255, 255, .18);
+  --flag-bg: #1a0d14;
+}
+
 /* Светлая — дневная, с контрастными бейджами и таблицами. */
 :root[data-theme="light"] {
   color-scheme: light;
@@ -588,7 +928,7 @@ main#views { padding: 18px; }
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 1560px;
+  max-width: none;
 }
 
 .view-head {
@@ -981,12 +1321,14 @@ main#views { padding: 18px; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  line-height: 1.1;
+  gap: 2px;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
 }
-.gauge b { font-size: 15px; font-weight: 650; }
+.gauge b { font-size: 15px; font-weight: 650; line-height: 1.1; }
 .gauge small {
   font-size: 8.5px;
+  line-height: 1;
   letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--dim);
@@ -1084,31 +1426,66 @@ main#views { padding: 18px; }
 .sub-item h3 { margin: 0; font-size: 13px; word-break: break-word; }
 .sub-item .sub-badges { display: flex; gap: 6px; flex-wrap: wrap; }
 
+/* ссылка подписки: текущая и редактор (пишется в config.yaml) */
+.sub-url {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--inset);
+  min-width: 0;
+}
+.sub-url.editing {
+  border-color: rgba(var(--accent-rgb), .45);
+  background: rgba(var(--accent-rgb), .06);
+}
+.sub-url-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.sub-url-k {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sub-url-src { font-size: 10px; color: var(--dim); font-family: var(--mono); }
+.sub-url-val {
+  font-size: 11.5px;
+  color: var(--txt-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: var(--input);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+  min-width: 0;
+}
+.sub-url-input { font-size: 12px; }
+.sub-url-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.sub-url-err { font-size: 11.5px; color: var(--bad-txt); }
+.sub-url-note { font-size: 11px; color: var(--dim); line-height: 1.4; }
+
 /* -------------------------------- серверы ------------------------------- */
 
-/* горизонтальные вкладки групп (скролл только внутри, не по странице) */
+/* вкладки групп: переносим по строкам, чтобы все были видны сразу, без скролла */
 .srv-tabs-wrap { position: relative; min-width: 0; }
 .srv-tabs {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 2px 2px 7px;
-  margin: 0 -2px;
-  scroll-snap-type: x proximity;
-  scroll-behavior: smooth;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior-x: contain;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px;
+  margin: 0;
 }
 .gtab {
-  flex: 0 0 auto;
-  min-width: 158px;
-  max-width: 268px;
+  flex: 1 1 148px;
+  min-width: 0;
+  max-width: 320px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  column-gap: 9px;
-  padding: 8px 11px;
+  column-gap: 8px;
+  padding: 6px 10px;
   border: 1px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--inset);
@@ -1116,7 +1493,6 @@ main#views { padding: 18px; }
   font: inherit;
   text-align: left;
   cursor: pointer;
-  scroll-snap-align: start;
   transition: background .16s, border-color .16s, color .16s, box-shadow .16s;
 }
 .gtab:hover { background: var(--card-2); color: var(--txt); border-color: var(--line-strong); }
@@ -1131,25 +1507,25 @@ main#views { padding: 18px; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 8px;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   background: var(--chip2);
   color: var(--muted);
   border: 1px solid var(--line-soft);
   transition: color .16s, background .16s, border-color .16s;
 }
-.gtab-ico .ico { width: 16px; height: 16px; }
+.gtab-ico .ico { width: 14px; height: 14px; }
 .gtab:hover .gtab-ico { color: var(--txt); }
 .gtab.active .gtab-ico {
   color: var(--accent-txt);
   background: rgba(var(--accent-rgb), .16);
   border-color: rgba(var(--accent-rgb), .34);
 }
-.gtab-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.gtab-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .gtab-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
 .gtab-name {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 650;
   letter-spacing: -.1px;
   overflow: hidden;
@@ -1159,7 +1535,7 @@ main#views { padding: 18px; }
 }
 .gtab-count {
   flex: 0 0 auto;
-  font-size: 10.5px;
+  font-size: 10px;
   font-variant-numeric: tabular-nums;
   padding: 1px 6px;
   border-radius: 999px;
@@ -1167,7 +1543,7 @@ main#views { padding: 18px; }
   color: var(--muted);
 }
 .gtab.active .gtab-count { background: rgba(var(--accent-rgb), .25); color: var(--accent-txt); }
-.gtab-sub { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 10.5px; }
+.gtab-sub { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 10px; }
 .gtab-type { flex: 0 0 auto; color: var(--dim); }
 .gtab-now {
   display: flex;
@@ -1639,6 +2015,23 @@ main#views { padding: 18px; }
 .ico.sm { width: 13px; height: 13px; }
 .ico.lg { width: 18px; height: 18px; }
 .ico.xl { width: 22px; height: 22px; }
+
+/* Иконка группы из config.yaml (icon: в proxy-groups) — обычно PNG с CDN. */
+.ico-img {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  border-radius: 4px;
+  vertical-align: -4px;
+}
+.ico-img.sm { width: 14px; height: 14px; border-radius: 3px; }
+.ico-img.lg { width: 22px; height: 22px; }
+.gtab-ico .ico-img { width: 18px; height: 18px; }
+.srv-panel-title h2 .ico-img { width: 20px; height: 20px; }
+.srv-cur .ico-img { width: 14px; height: 14px; }
+.gtab-now .ico-img { width: 13px; height: 13px; }
 .card-h .ico { opacity: .8; }
 .card-h h2 .ico { margin-right: 1px; }
 
@@ -1693,6 +2086,8 @@ main#views { padding: 18px; }
   right: 0;
   z-index: 60;
   width: 244px;
+  max-height: min(72vh, 560px);
+  overflow-y: auto;
   padding: 6px;
   display: flex;
   flex-direction: column;
@@ -1702,6 +2097,7 @@ main#views { padding: 18px; }
   border-radius: var(--radius);
   box-shadow: var(--shadow-2);
   animation: toastIn .14s ease-out;
+  overscroll-behavior: contain;
 }
 .theme-menu-h {
   font-size: 9.5px;
@@ -1987,6 +2383,84 @@ main#views { padding: 18px; }
 .asn-loading { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--accent-txt); }
 .asn-empty { font-size: 11.5px; color: var(--dim); }
 
+/* -------------------- соединения: устройство и его выход ---------------- */
+
+.dev-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.dev-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 1 232px;
+  min-width: 0;
+}
+.dev-pick-lbl {
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.dev-select { width: 100%; font-variant-numeric: tabular-nums; }
+.dev-exit {
+  flex: 1 1 340px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: linear-gradient(180deg, var(--card-2), var(--card));
+  box-shadow: inset 0 1px 0 var(--inset-hi);
+}
+.dev-exit-main {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 12.5px;
+}
+.dev-exit-lbl { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+.dev-exit-main b { color: var(--txt); font-weight: 650; word-break: break-word; min-width: 0; }
+.dev-exit-chain {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.dev-exit-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.dev-exit-stats {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+.dev-exit-more {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--dim);
+}
+.dev-exit-more .chain-node { font-size: 11px; padding: 2px 6px; }
+.dev-empty { font-size: 11.5px; color: var(--dim); }
+
 /* -------------------- соединения: выбранная строка ---------------------- */
 
 .conn-row { cursor: pointer; }
@@ -2045,6 +2519,14 @@ main#views { padding: 18px; }
 :root[data-theme="light"] .theme-card.active .tick { color: #fff; }
 
 /* ------------------------------ адаптивность ---------------------------- */
+
+@media (min-width: 1720px) {
+  .node-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+
+@media (min-width: 2100px) {
+  .node-grid { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
 
 @media (max-width: 1399px) {
   .node-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -2171,6 +2653,20 @@ main#views { padding: 18px; }
 
   .upd-grid { grid-template-columns: 1fr; }
   .upd-progress { font-size: 12px; }
+}
+
+@media (max-width: 700px) {
+  /* на телефоне вкладки снова одной строкой со скроллом — вертикали жалко */
+  .srv-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+    padding-bottom: 4px;
+  }
+  .gtab { flex: 0 0 auto; width: 158px; max-width: 210px; }
 }
 
 @media (max-width: 560px) {

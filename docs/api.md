@@ -79,6 +79,37 @@ UI (статика, отдаётся mihomo по `/ui`) обращается к 
 | `DELETE /api/connections` | закрыть все |
 | `GET /api/rules` | `{ "rules": [ { "type": "...", "payload": "...", "proxy": "..." } ] }` |
 
+## Подписка: ссылка в config.yaml
+
+Clash API не отдаёт url провайдера, поэтому демон читает и правит `config.yaml`
+сам (у него есть `-confdir`, по умолчанию `/opt/etc/mihomo`).
+
+`GET /api/subscription` — провайдеры из `proxy-providers`:
+
+```json
+{ "ok": true, "found": true, "configPath": "/opt/etc/mihomo/config.yaml",
+  "providers": [
+    { "name": "subscription", "type": "http",
+      "url": "https://sub.example.com/api/v1/client/subscribe?token=…",
+      "file": "./proxy_providers/subscription.yaml", "interval": 3600, "line": 13 }
+  ] }
+```
+
+`POST /api/subscription` — `{ "name": "subscription", "url": "https://…" }`.
+Меняется только строка `url:` у этого провайдера (остальной файл не трогается),
+создаётся копия `config.yaml.xrock-bak-<дата>`, затем `PUT /configs` — mihomo
+перечитывает конфиг без перезапуска VPN. Ответ:
+
+```json
+{ "ok": true, "name": "subscription", "url": "https://…",
+  "configPath": "…", "backup": "config.yaml.xrock-bak-20261116-173108",
+  "changed": true, "reloaded": true }
+```
+
+`reloaded: false` — файл уже изменён, но ядро конфиг не приняло (`reloadErr`):
+нужен перезапуск (`xkeen -restart`). Ошибки: 400 — некорректный url,
+404 — нет такого провайдера в конфиге, 502 — конфиг не читается/не пишется.
+
 ## Проверка живости
 
 `GET /api/ping` → `{"ok":true,"version":"0.1.0"}` (без обращения к mihomo).

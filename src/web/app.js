@@ -26,12 +26,13 @@
     seen: false,
     link: { ok: false, err: '', fails: 0, version: '' },
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
-    conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '' },
+    conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '' },
     rules: { list: [], search: '', at: 0, loading: false, err: '' },
     journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
     servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
     settings: { dirty: false, targetsDirty: false, inited: false },
     sys: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
+    sub: { at: 0, loading: false, err: '', data: null, edit: '' },
     ver: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
     upd: { kind: '', running: false, startedAt: 0, timer: null },
     drawer: { open: false, kind: '', key: '', ip: '', conn: null, event: null, log: null, scroll: 0 },
@@ -55,7 +56,6 @@
   var wdGroupsSig = '';
   var delayRev = 0;
   var serversSig = null;
-  var tabsScrolledTo = '';
   var rulesSig = '';
   var eventsSig = '';
   var asnCache = Object.create(null);   // ip -> {t, info, err}
@@ -509,6 +509,69 @@
     return 'server';
   }
 
+  /* -------- иконки групп из config.yaml (поле icon: в proxy-groups) -------- */
+
+  // Группа в состоянии демона приходит с icon из конфига mihomo — обычно это
+  // ссылка на Qure/simple-icons. Названия служебных иконок (Available, Auto,
+  // Reject…) ничего не говорят о группе, поэтому для них остаётся локальная
+  // иконка по имени; сервисные иконки берём как есть — с CDN, а если он
+  // недоступен (роутер без интернета), подставляем локальную.
+  var GENERIC_ICON_RE = /^(reject|available|auto|direct|global|proxy|static|balance|roundrobin|url-?test|fallback|select|adblock|block|ads|final|match|cn|ru)$/i;
+
+  var ICON_ALIASES = {
+    youtube: 'youtube', youtubemusic: 'youtube', yt: 'youtube',
+    telegram: 'telegram', tg: 'telegram',
+    twitter: 'x', x: 'x',
+    discord: 'discord', steam: 'steam', twitch: 'twitch',
+    instagram: 'instagram', whatsapp: 'whatsapp',
+    netflix: 'netflix', spotify: 'spotify', github: 'github'
+  };
+
+  function iconFileName(url) {
+    var s = String(url || '').split(/[?#]/)[0];
+    var i = s.lastIndexOf('/');
+    return (i >= 0 ? s.slice(i + 1) : s).toLowerCase();
+  }
+
+  function serviceKeyFromIcon(url) {
+    var name = iconFileName(url).replace(/\.(png|svg|jpe?g|webp|gif|ico)$/i, '').replace(/[^a-z0-9]/g, '');
+    return ICON_ALIASES[name] || '';
+  }
+
+  function groupIconUrl(name) {
+    var g = groupByName(name);
+    var url = g && g.icon ? String(g.icon) : '';
+    return url;
+  }
+
+  // Иконка группы: из config.yaml (icon:), иначе локальная по имени.
+  function groupIconEl(name, cls) {
+    var url = groupIconUrl(name);
+    var sizeCls = cls === 'lg' ? ' lg' : (cls === 'sm' ? ' sm' : '');
+    var isData = /^data:image\//i.test(url);
+    var isHttp = /^https?:\/\//i.test(url);
+    var fileName = iconFileName(url);
+    var svc = serviceKeyFromIcon(url);
+    var generic = GENERIC_ICON_RE.test(fileName.replace(/\.(png|svg|jpe?g|webp|gif|ico)$/i, ''));
+    if (url && !generic && (isData || isHttp)) {
+      var img = el('img', {
+        class: 'ico-img' + sizeCls,
+        src: url,
+        alt: '',
+        title: name,
+        loading: 'lazy',
+        decoding: 'async',
+        referrerpolicy: 'no-referrer'
+      });
+      img.addEventListener('error', function () {
+        var fallback = svc && ICON_SET[svc] ? svc : groupIconName(name);
+        if (img.parentNode) img.parentNode.replaceChild(icoEl(fallback, cls), img);
+      });
+      return img;
+    }
+    return icoEl(svc && ICON_SET[svc] ? svc : groupIconName(name), cls);
+  }
+
   // Встроенные «узлы» mihomo: у них нет страны, но есть подходящая иконка.
   var BUILTIN_ICONS = {
     direct: 'direct',
@@ -524,7 +587,7 @@
   function nodeBadge(name, cls) {
     var key = String(name === null || name === undefined ? '' : name).trim().toLowerCase();
     if (BUILTIN_ICONS[key]) return icoEl(BUILTIN_ICONS[key], cls === 'lg' ? 'lg' : 'sm');
-    if (isGroupName(name)) return icoEl(groupIconName(name), cls === 'lg' ? 'lg' : 'sm');
+    if (isGroupName(name)) return groupIconEl(name, cls === 'lg' ? 'lg' : 'sm');
     return flagForNode(name, cls);
   }
 
@@ -574,7 +637,8 @@
   /* ------------------------- темы оформления ------------------------------ */
 
   var THEME_META_COLOR = {
-    dark: '#0b0f14', light: '#eef2f7', midnight: '#050a15', nord: '#2e3440'
+    dark: '#0b0f14', light: '#eef2f7', midnight: '#050a15', nord: '#2e3440',
+    ocean: '#06121a', emerald: '#06120e', gold: '#12100a', violet: '#0b0817', rose: '#140910'
   };
 
   var THEME_LIST = [
@@ -593,6 +657,26 @@
     {
       id: 'nord', name: 'Nord', desc: 'северная палитра',
       prev: { bg: '#2e3440', side: '#2b303b', card: '#3b4252', accent: '#88c0d0', line: '#4c566a', ok: '#a3be8c' }
+    },
+    {
+      id: 'ocean', name: 'Океан', desc: 'бирюзовая, голубой акцент',
+      prev: { bg: '#06121a', side: '#06131b', card: '#0a1a24', accent: '#22d3ee', line: '#143242', ok: '#34d399' }
+    },
+    {
+      id: 'emerald', name: 'Изумруд', desc: 'зелёная',
+      prev: { bg: '#06120e', side: '#06131a', card: '#0a1a15', accent: '#34d399', line: '#143226', ok: '#86efac' }
+    },
+    {
+      id: 'gold', name: 'Золото', desc: 'тёплая, янтарная',
+      prev: { bg: '#12100a', side: '#141109', card: '#1d1810', accent: '#e6b34a', line: '#3a3223', ok: '#6ee7a8' }
+    },
+    {
+      id: 'violet', name: 'Аметист', desc: 'фиолетовая',
+      prev: { bg: '#0b0817', side: '#0b0818', card: '#14101f', accent: '#a78bfa', line: '#2a2240', ok: '#34d399' }
+    },
+    {
+      id: 'rose', name: 'Роза', desc: 'розово-красная',
+      prev: { bg: '#140910', side: '#150a11', card: '#1e0f17', accent: '#fb7185', line: '#3a1d29', ok: '#34d399' }
     },
     {
       id: 'system', name: 'Как в системе', desc: 'следовать теме ОС',
@@ -1559,7 +1643,8 @@
       renderRules();
       loadRules();
     } else if (view === 'subscription') {
-      renderSubscription();
+      renderSubscription(true);
+      loadSubscription();
     } else if (view === 'journal') {
       renderJournal();
       if (ui.journal.tab === 'logs') startLogStream();
@@ -2236,7 +2321,7 @@
       var now = g.now || '—';
       var nowIsGroup = isGroupName(now);
       var nowCode = nowIsGroup ? '' : countryFromName(now);
-      var nowIcon = nowIsGroup ? icoEl(groupIconName(now), 'sm') : (nowCode ? flagEl(nowCode, 'sm') : (BUILTIN_ICONS[String(now).toLowerCase()] ? icoEl(BUILTIN_ICONS[String(now).toLowerCase()], 'sm') : null));
+      var nowIcon = nowIsGroup ? groupIconEl(now, 'sm') : (nowCode ? flagEl(nowCode, 'sm') : (BUILTIN_ICONS[String(now).toLowerCase()] ? icoEl(BUILTIN_ICONS[String(now).toLowerCase()], 'sm') : null));
       box.appendChild(el('button', {
         type: 'button',
         class: 'gtab' + (active ? ' active' : ''),
@@ -2245,7 +2330,7 @@
         title: g.name + ' · ' + (g.type || 'группа') + '\nтекущий: ' + now + '\n' + nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']),
         dataset: { group: g.name }
       }, [
-        el('span', { class: 'gtab-ico' }, [icoEl(groupIconName(g.name))]),
+        el('span', { class: 'gtab-ico' }, [groupIconEl(g.name)]),
         el('span', { class: 'gtab-main' }, [
           el('span', { class: 'gtab-top' }, [
             el('span', { class: 'gtab-name', text: g.name }),
@@ -2258,14 +2343,14 @@
         ])
       ]));
     });
-    // Активная вкладка должна быть видна при горизонтальном скролле — но не
-    // возвращаем её насильно, если пользователь сам прокрутил вкладки.
+    // На телефоне вкладки остаются горизонтальными — активную подкручиваем в вид.
     var act = box.querySelector('.gtab.active');
-    if (act && activeName !== tabsScrolledTo) {
-      tabsScrolledTo = activeName;
+    if (act && box.scrollWidth > box.clientWidth + 4) {
       var left = act.offsetLeft - box.offsetLeft;
       if (left < box.scrollLeft || left + act.offsetWidth > box.scrollLeft + box.clientWidth) {
-        box.scrollLeft = Math.max(0, left - 8);
+        var target = Math.max(0, left - 8);
+        try { box.scrollTo({ left: target, behavior: 'smooth' }); }
+        catch (e) { box.scrollLeft = target; }
       }
     }
   }
@@ -2284,12 +2369,12 @@
     var nowCode = nowIsGroup ? '' : countryFromName(nowName);
     var cur = el('span', { class: 'srv-cur', title: 'Текущий узел группы' }, [
       el('span', { class: 'muted', text: 'текущий:' }),
-      nowIsGroup ? icoEl(groupIconName(nowName), 'sm') : (nowCode ? flagEl(nowCode, 'sm') : null),
+      nowIsGroup ? groupIconEl(nowName, 'sm') : (nowCode ? flagEl(nowCode, 'sm') : null),
       el('b', { text: nodeLabel(nowName) || '—' })
     ]);
 
     box.appendChild(el('div', { class: 'srv-panel-title' }, [
-      el('h2', null, [icoEl(groupIconName(group.name)), el('span', { text: group.name })]),
+      el('h2', null, [groupIconEl(group.name), el('span', { text: group.name })]),
       el('span', { class: 'badge muted', text: group.type || 'группа' }),
       el('span', { class: 'badge muted', text: nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']) }),
       cur,
@@ -2441,9 +2526,7 @@
     });
 
     // флаг страны слева; у подгрупп — иконка группы
-    card.appendChild(el('span', { class: 'ncard-flag' }, [
-      isSub ? icoEl(groupIconName(name)) : flagEl(cc)
-    ]));
+    card.appendChild(el('span', { class: 'ncard-flag' }, [nodeBadge(name)]));
 
     card.appendChild(el('span', { class: 'ncard-name', text: shown, title: name }));
 
@@ -2651,6 +2734,7 @@
       network: m.network ? String(m.network) : '',
       type: m.type ? String(m.type) : '',
       src: src ? src + (srcPort ? ':' + srcPort : '') : '',
+      srcIp: src ? String(src) : '',
       dst: dstText,
       ip: dst ? String(dst) : (isIpAddr(host) ? String(host) : ''),
       port: dstPort ? String(dstPort) : '',
@@ -2700,14 +2784,170 @@
     return (c.host + ' ' + c.rule + ' ' + c.payload + ' ' + c.chain + ' ' + c.dst + ' ' + c.src).toLowerCase().indexOf(q) >= 0;
   }
 
+  /* ------------------- устройства в локальной сети ---------------------- */
+
+  var devSig = '';        // набор sourceIP в списке (пересборка <select>)
+  var devCountsSig = '';  // счётчики для подписей опций
+
+  // Куда реально уходит соединение — последний элемент цепочки (сам узел).
+  function connExitNode(c) {
+    var list = c && Array.isArray(c.chainList) ? c.chainList : [];
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i]) return list[i];
+    }
+    return '';
+  }
+
+  // Сводка по локальным адресам: сколько соединений, трафик и через что выходят.
+  function connDeviceStats() {
+    var map = Object.create(null);
+    var order = [];
+    var list = ui.conns.list;
+    for (var i = 0; i < list.length; i++) {
+      var c = list[i];
+      var ip = c.srcIp || '';
+      if (!ip) continue;
+      var d = map[ip];
+      if (!d) {
+        d = map[ip] = { ip: ip, count: 0, up: 0, down: 0, exits: Object.create(null), exitOrder: [] };
+        order.push(ip);
+      }
+      d.count++;
+      d.up += c.up;
+      d.down += c.down;
+      var ex = connExitNode(c);
+      if (!ex) continue;
+      var e = d.exits[ex];
+      if (!e) {
+        e = d.exits[ex] = { node: ex, count: 0, bytes: 0, chain: (c.chainList || []).slice() };
+        d.exitOrder.push(ex);
+      }
+      e.count++;
+      e.bytes += c.up + c.down;
+      if ((c.chainList || []).length > e.chain.length) e.chain = (c.chainList || []).slice();
+    }
+    var out = order.map(function (ip) { return map[ip]; });
+    out.forEach(function (d) {
+      d.exitList = d.exitOrder.map(function (n) { return d.exits[n]; }).sort(function (a, b) {
+        return b.bytes - a.bytes || b.count - a.count;
+      });
+      d.top = d.exitList[0] || null;
+    });
+    out.sort(function (a, b) {
+      try { return b.count - a.count || a.ip.localeCompare(b.ip, 'ru', { numeric: true }); }
+      catch (e) { return b.count - a.count || (a.ip < b.ip ? -1 : a.ip > b.ip ? 1 : 0); }
+    });
+    return out;
+  }
+
+  function renderDeviceBar(devices) {
+    var sel = $('conn-device');
+    if (!sel) return;
+    var sig = devices.map(function (d) { return d.ip; }).join('|');
+    var counts = devices.map(function (d) { return d.ip + ':' + d.count; }).join('|');
+    if (sig !== devSig) {
+      devSig = sig;
+      var keep = ui.conns.device;
+      clear(sel);
+      sel.appendChild(el('option', {
+        value: '',
+        text: devices.length ? 'Все устройства · ' + ui.conns.list.length : 'Все устройства'
+      }));
+      devices.forEach(function (d) {
+        sel.appendChild(el('option', { value: d.ip, text: d.ip + ' · ' + d.count }));
+      });
+      var known = false;
+      devices.forEach(function (d) { if (d.ip === keep) known = true; });
+      if (keep && !known) sel.appendChild(el('option', { value: keep, text: keep + ' · 0' }));
+      sel.value = keep || '';
+    } else if (counts !== devCountsSig) {
+      // обновляем только подписи, чтобы не сбрасывать открытый список
+      var byIp = Object.create(null);
+      devices.forEach(function (d) { byIp[d.ip] = d; });
+      for (var j = 0; j < sel.options.length; j++) {
+        var opt = sel.options[j];
+        if (!opt.value) {
+          opt.textContent = devices.length ? 'Все устройства · ' + ui.conns.list.length : 'Все устройства';
+        } else if (byIp[opt.value]) {
+          opt.textContent = byIp[opt.value].ip + ' · ' + byIp[opt.value].count;
+        }
+      }
+    }
+    devCountsSig = counts;
+    renderDeviceExit(devices);
+  }
+
+  function renderDeviceExit(devices) {
+    var box = $('conn-dev-exit');
+    if (!box) return;
+    var ip = ui.conns.device;
+    if (!ip) {
+      box.hidden = true;
+      clear(box);
+      return;
+    }
+    var dev = null;
+    for (var i = 0; i < devices.length; i++) {
+      if (devices[i].ip === ip) { dev = devices[i]; break; }
+    }
+    box.hidden = false;
+    clear(box);
+    if (!dev) {
+      box.appendChild(el('div', {
+        class: 'dev-empty',
+        text: 'У устройства ' + ip + ' сейчас нет активных соединений.'
+      }));
+      return;
+    }
+    var main = el('div', { class: 'dev-exit-main' });
+    var top = dev.top;
+    if (top) {
+      main.appendChild(el('span', { class: 'dev-exit-lbl', text: 'выходит через' }));
+      main.appendChild(nodeBadge(top.node, 'sm'));
+      main.appendChild(el('b', { text: nodeLabel(top.node) || '—' }));
+      var cc = countryFromName(top.node);
+      if (cc) main.appendChild(el('span', { class: 'badge muted', text: countryName(cc) }));
+      var chainText = Array.isArray(top.chain) ? top.chain.map(nodeLabel).join(' → ') : '';
+      if (chainText) main.appendChild(el('span', { class: 'dev-exit-chain', text: chainText, title: chainText }));
+    } else {
+      main.appendChild(el('span', { class: 'dev-empty', text: 'маршрут пока не определён' }));
+    }
+    box.appendChild(el('div', { class: 'dev-exit-row' }, [
+      main,
+      el('div', {
+        class: 'dev-exit-stats',
+        text: dev.count + ' ' + plural(dev.count, ['соединение', 'соединения', 'соединений']) +
+          ' · ↑ ' + fmtBytes(dev.up) + ' · ↓ ' + fmtBytes(dev.down)
+      })
+    ]));
+    if (dev.exitList.length > 1) {
+      var more = el('div', { class: 'dev-exit-more' }, [el('span', { text: 'ещё:' })]);
+      dev.exitList.slice(1, 5).forEach(function (e) {
+        more.appendChild(el('span', { class: 'chain-node' }, [
+          nodeBadge(e.node, 'sm'),
+          el('b', { text: nodeLabel(e.node) || '—' }),
+          el('span', { class: 'muted', text: '· ' + e.count })
+        ]));
+      });
+      if (dev.exitList.length > 5) more.appendChild(el('span', { text: '+ ещё ' + (dev.exitList.length - 5) }));
+      box.appendChild(more);
+    }
+  }
+
   function renderConnections() {
     var body = $('conn-body');
     if (!body) return;
     var wrap = $('conn-table-wrap');
     var keepScroll = wrap ? wrap.scrollTop : 0;
     var q = (ui.conns.search || '').trim().toLowerCase();
-    var list = ui.conns.list.slice().sort(function (a, b) { return b.start - a.start; });
+    var dev = ui.conns.device || '';
+    var all = ui.conns.list;
+    var devTotal = dev ? all.filter(function (c) { return c.srcIp === dev; }).length : all.length;
+    var list = all.slice().sort(function (a, b) { return b.start - a.start; });
+    if (dev) list = list.filter(function (c) { return c.srcIp === dev; });
     if (q) list = list.filter(function (c) { return connMatches(c, q); });
+
+    renderDeviceBar(connDeviceStats());
 
     clear(body);
     var nowSec = Math.floor(Date.now() / 1000);
@@ -2717,6 +2957,7 @@
       var ruleText = c.rule || '—';
       // если хоста нет и в таблице уже стоит IP, не дублируем «IP:порт» второй строкой
       var dstNote = c.host && c.ip && c.host === c.ip ? '' : c.dst;
+      var srcNote = !dev && c.srcIp ? 'из ' + c.srcIp : '';
       var selected = ui.drawer.open && ui.drawer.kind === 'conn' && ui.drawer.key === c.id;
       var closeBtn = el('button', {
         type: 'button', class: 'btn small ghost', title: 'Закрыть соединение',
@@ -2737,7 +2978,7 @@
             el('span', { class: 'cell-main', text: c.host, title: c.host }),
             el('span', {
               class: 'cell-sub',
-              text: [c.network, c.type, dstNote, c.process ? c.process : ''].filter(Boolean).join(' · ') || (c.src ? 'из ' + c.src : ''),
+              text: [c.network, c.type, dstNote, srcNote, c.process ? c.process : ''].filter(Boolean).join(' · ') || (c.src ? 'из ' + c.src : ''),
               title: [c.dst && 'назначение: ' + c.dst, c.src && 'источник: ' + c.src, c.process && 'процесс: ' + c.process].filter(Boolean).join('\n')
             })
           ])
@@ -2771,15 +3012,23 @@
     var emptyEl = $('conn-empty');
     if (emptyEl) {
       emptyEl.hidden = list.length > 0;
-      emptyEl.textContent = q ? 'Ничего не найдено по запросу «' + ui.conns.search + '»' : 'Нет активных соединений';
+      if (dev && !devTotal) {
+        emptyEl.textContent = 'У устройства ' + dev + ' сейчас нет активных соединений';
+      } else if (q) {
+        emptyEl.textContent = 'Ничего не найдено по запросу «' + ui.conns.search + '»' + (dev ? ' у устройства ' + dev : '');
+      } else if (dev) {
+        emptyEl.textContent = 'У устройства ' + dev + ' нет соединений с такими параметрами';
+      } else {
+        emptyEl.textContent = 'Нет активных соединений';
+      }
     }
     if (table) table.hidden = list.length === 0;
 
     var countEl = $('conn-count');
     if (countEl) {
-      countEl.textContent = ui.conns.list.length
-        ? (q ? list.length + ' из ' + ui.conns.list.length : String(ui.conns.list.length))
-        : '';
+      if (!all.length) countEl.textContent = '';
+      else if (q || dev) countEl.textContent = list.length + ' из ' + devTotal;
+      else countEl.textContent = String(all.length);
     }
     renderConnMeta();
     if (wrap) wrap.scrollTop = keepScroll;
@@ -3430,14 +3679,162 @@
       type: 'button', class: 'btn small', text: 'Обновить',
       onclick: function () { updateProvider(p.name, btn); }
     });
+    body.appendChild(buildSubUrlBlock(p));
     body.appendChild(el('div', { class: 'row' }, [btn]));
     card.appendChild(body);
     return card;
   }
 
-  function renderSubscription() {
+  /* --------------------- ссылка подписки в config.yaml -------------------- */
+
+  function validateSubUrl(v) {
+    if (!v) return 'Ссылка пустая';
+    if (!/^https?:\/\//i.test(v)) return 'Ссылка должна начинаться с http:// или https://';
+    if (/[\s"'\\<>]/.test(v)) return 'В ссылке не должно быть пробелов, кавычек, обратных слэшей и < >';
+    if (v.length > 4096) return 'Слишком длинная ссылка';
+    return '';
+  }
+
+  function subProviderInfo(name) {
+    var d = ui.sub.data;
+    if (!d || !Array.isArray(d.providers)) return null;
+    for (var i = 0; i < d.providers.length; i++) {
+      if (String(d.providers[i].name).toLowerCase() === String(name).toLowerCase()) return d.providers[i];
+    }
+    return null;
+  }
+
+  async function loadSubscription(force) {
+    if (ui.sub.loading) return;
+    if (!force && ui.sub.at && Date.now() - ui.sub.at < 15000) return;
+    ui.sub.loading = true;
+    try {
+      var res = await apiJson('/api/subscription', null, 8000);
+      if (!res || typeof res !== 'object' || res.ok === false) {
+        throw new ApiError((res && res.err) || 'демон не отдаёт /api/subscription', '/api/subscription', 'NoSub');
+      }
+      ui.sub.data = {
+        configPath: res.configPath ? String(res.configPath) : '',
+        providers: Array.isArray(res.providers) ? res.providers : []
+      };
+      ui.sub.err = '';
+      ui.sub.at = Date.now();
+    } catch (e) {
+      ui.sub.err = friendlyError(e);
+      ui.sub.data = null;
+      ui.sub.at = 0;
+    } finally {
+      ui.sub.loading = false;
+      if (ui.view === 'subscription') renderSubscription();
+    }
+  }
+
+  function buildSubUrlBlock(p) {
+    var info = subProviderInfo(p.name);
+    var editing = ui.sub.edit === p.name;
+    var box = el('div', { class: 'sub-url' + (editing ? ' editing' : '') });
+
+    box.appendChild(el('div', { class: 'sub-url-top' }, [
+      el('span', { class: 'sub-url-k', text: 'Ссылка подписки' }),
+      el('span', {
+        class: 'sub-url-src',
+        text: info ? 'config.yaml' : (ui.sub.err ? 'недоступна' : '…'),
+        title: ui.sub.err || (ui.sub.data && ui.sub.data.configPath) || ''
+      })
+    ]));
+
+    if (editing) {
+      var input = el('input', {
+        class: 'input mono sub-url-input', type: 'url', value: info ? info.url : '',
+        placeholder: 'https://…', spellcheck: 'false', autocomplete: 'off', inputmode: 'url'
+      });
+      var errEl = el('div', { class: 'sub-url-err', hidden: true });
+      var saveBtn = el('button', { type: 'button', class: 'btn small primary', text: 'Сохранить' });
+      var cancelBtn = el('button', { type: 'button', class: 'btn small ghost', text: 'Отмена' });
+      var busy = false;
+
+      function close() {
+        ui.sub.edit = '';
+        renderSubscription(true);
+      }
+      function showErr(text) {
+        errEl.textContent = text;
+        errEl.hidden = false;
+      }
+      function save() {
+        if (busy) return;
+        var v = input.value.trim();
+        var bad = validateSubUrl(v);
+        if (bad) { showErr(bad); try { input.focus(); } catch (e) { /* ignore */ } return; }
+        busy = true;
+        errEl.hidden = true;
+        setBusy(saveBtn, true, 'Сохраняю…');
+        cancelBtn.disabled = true;
+        postJson('/api/subscription', { name: p.name, url: v }, 30000)
+          .then(function (res) {
+            if (!res || res.ok === false) {
+              throw new ApiError((res && res.error) || 'демон не сохранил ссылку', '/api/subscription', 'SubSave');
+            }
+            ui.sub.edit = '';
+            if (res.changed === false) {
+              toast('Ссылка не изменилась', 'info', 2500);
+            } else if (res.reloaded === false) {
+              toast('Ссылка сохранена, но mihomo не перечитал конфиг: ' + (res.reloadErr || 'неизвестно') +
+                '. Перезапустите ядро: xkeen -restart', 'warn', 12000);
+            } else {
+              toast('Ссылка подписки обновлена — mihomo перечитал config.yaml', 'ok', 6000);
+              if (res.backup) {
+                setTimeout(function () { toast('Копия старого конфига: ' + res.backup, 'info', 5000); }, 700);
+              }
+            }
+            loadSubscription(true);
+            setTimeout(function () { pollState(); }, 1500);
+            renderSubscription(true);
+          })
+          .catch(function (e) {
+            showErr('Не удалось сохранить: ' + friendlyError(e));
+            setBusy(saveBtn, false, 'Сохранить');
+            cancelBtn.disabled = false;
+            busy = false;
+          });
+      }
+
+      saveBtn.addEventListener('click', save);
+      cancelBtn.addEventListener('click', close);
+      input.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        else if (e.key === 'Escape') { e.preventDefault(); close(); }
+      });
+      box.appendChild(input);
+      box.appendChild(errEl);
+      box.appendChild(el('div', { class: 'sub-url-actions' }, [saveBtn, cancelBtn]));
+      if (!info) {
+        box.appendChild(el('div', { class: 'sub-url-note', text: ui.sub.err
+          ? 'Демон не отдал текущую ссылку (' + ui.sub.err + '). Можно вписать новую.'
+          : 'Текущая ссылка ещё не получена от демона.' }));
+      }
+      setTimeout(function () { try { input.focus(); input.select(); } catch (e) { /* ignore */ } }, 0);
+    } else {
+      var val = info && info.url ? String(info.url) : '';
+      box.appendChild(el('div', { class: 'sub-url-val mono', text: val || '—', title: val }));
+      var editBtn = el('button', { type: 'button', class: 'btn small ghost', text: 'Изменить' });
+      editBtn.addEventListener('click', function () {
+        ui.sub.edit = p.name;
+        renderSubscription(true);
+      });
+      box.appendChild(el('div', { class: 'sub-url-actions' }, [editBtn]));
+      if (!info && ui.sub.err) {
+        box.appendChild(el('div', { class: 'sub-url-note', text: 'Текущую ссылку демон не отдал: ' + ui.sub.err }));
+      }
+    }
+    return box;
+  }
+
+  function renderSubscription(force) {
     var list = $('sub-list');
     if (!list) return;
+    // под открытым редактором не перерисовываем: пользователь вводит ссылку
+    if (ui.sub.edit && !force) return;
     clear(list);
     var emptyEl = $('sub-empty');
     var st = ui.state;
@@ -4134,6 +4531,9 @@
     ui.conns.up = 0;
     ui.conns.down = 0;
     ui.conns.err = '';
+    ui.conns.device = '';
+    devSig = '';
+    devCountsSig = '';
     ui.rules.list = [];
     ui.rules.at = 0;
     ui.rules.err = '';
@@ -4146,13 +4546,13 @@
     ui.servers.group = '';
     ui.sys = { data: null, at: 0, triedAt: 0, loading: false, err: '' };
     ui.ver = { data: null, at: 0, triedAt: 0, loading: false, err: '' };
+    ui.sub = { at: 0, loading: false, err: '', data: null, edit: '' };
     ui.upd = { kind: '', running: false, startedAt: 0, timer: null };
     ui.pendingSelect = Object.create(null);
     ui.journal.logs = [];
     var logList = $('log-list');
     if (logList) clear(logList);
     serversSig = null;
-    tabsScrolledTo = '';
     showUpdLog([], false);
     setUpdProgress(null);
     hideBanner();
@@ -4365,6 +4765,11 @@
     var connSearch = $('conn-search');
     if (connSearch) connSearch.addEventListener('input', function () {
       ui.conns.search = connSearch.value;
+      renderConnections();
+    });
+    var connDevice = $('conn-device');
+    if (connDevice) connDevice.addEventListener('change', function () {
+      ui.conns.device = connDevice.value || '';
       renderConnections();
     });
     var closeAllBtn = $('btn-conn-close-all');

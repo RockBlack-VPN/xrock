@@ -55,7 +55,7 @@ chmod +x "$STAGE/install.sh"
 cp "$DIST/xrock-$VER.tar.gz" "$DIST/xrock-latest.tar.gz"
 rm -rf "$DIST/stage"
 
-# 2. архив UI для external-ui-url (файлы в корне zip, как dist.zip у zashboard)
+# 2. архив UI для external-ui-url (файлы в корне zip)
 cd "$ROOT/src/web"
 PY=""
 for c in python3 python; do

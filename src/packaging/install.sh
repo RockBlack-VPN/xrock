@@ -6,7 +6,7 @@
 # Панель (UI) больше не «копируется файлами»: в config.yaml прописываются
 #   external-ui: xrock
 #   external-ui-url: https://github.com/RockBlack-VPN/xrock/releases/latest/download/xrock-ui.zip
-# и mihomo сам скачивает/обновляет её — как zashboard. Если GitHub недоступен,
+# и mihomo сам скачивает/обновляет её. Если GitHub недоступен,
 # установщик упадёт на копию UI из архива (офлайн-запас).
 set -e
 cd "$(dirname "$0")"
@@ -23,7 +23,7 @@ if [ "$1" = "--uninstall" ]; then
   [ -x "$INIT" ] && "$INIT" stop >/dev/null 2>&1 || true
   rm -f "$INIT" "$BIN_DIR/xrock"
   rm -rf "$UI_DIR"
-  echo "xrock удалён. В $CONF остались external-ui/external-ui-url — при необходимости верните zashboard."
+  echo "xrock удалён. В $CONF остались external-ui/external-ui-url — при необходимости удалите их."
   exit 0
 fi
 
@@ -50,7 +50,7 @@ fi
 cp "$SRC" "$BIN_DIR/xrock"
 chmod 755 "$BIN_DIR/xrock"
 
-# 2. конфиг mihomo: external-ui: xrock + адрес архива UI (как zashboard)
+# 2. конфиг mihomo: external-ui: xrock + адрес архива UI
 BACKUP="$CONF.xrock-backup.$(date +%Y%m%d-%H%M%S)"
 cp "$CONF" "$BACKUP"
 echo "Резервная копия конфига: $BACKUP"
