@@ -2472,6 +2472,12 @@ main#views { padding: 18px; }
   letter-spacing: 0;
 }
 .table th.sorted .sort-ind { opacity: 1; }
+/* чип паузы занимает место всегда — тулбар не меняет высоту при наведении */
+.chip.is-off { visibility: hidden; }
+/* на тач-устройствах наведения нет: паузы не бывает, место не резервируем */
+@media (hover: none) {
+  #conn-paused { display: none !important; }
+}
 .sort-pick { display: none; margin-left: auto; flex-direction: column; gap: 3px; min-width: 0; }
 .sort-pick-lbl {
   font-size: 9.5px;

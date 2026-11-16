@@ -3143,6 +3143,10 @@
   function renderConnMeta() {
     var meta = $('conn-meta');
     if (!meta) return;
+    // чип паузы обновляем всегда: место под него занято постоянно, чтобы
+    // тулбар не менял высоту и таблица не «прыгала»
+    var paused = $('conn-paused');
+    if (paused) paused.classList.toggle('is-off', !(ui.conns.hover && canHover()));
     if (ui.conns.err) {
       meta.textContent = 'ошибка: ' + ui.conns.err + (ui.conns.at ? ' · данные от ' + fmtClock(ui.conns.at / 1000) : '');
       meta.className = 'small';
@@ -3155,8 +3159,6 @@
     if (ui.conns.at) parts.push('обновлено ' + fmtClock(ui.conns.at / 1000));
     parts.push('всего ↑ ' + fmtBytes(ui.conns.up) + ' · ↓ ' + fmtBytes(ui.conns.down));
     meta.textContent = parts.join(' · ');
-    var paused = $('conn-paused');
-    if (paused) paused.hidden = !(ui.conns.hover && canHover());
   }
 
   function canHover() {

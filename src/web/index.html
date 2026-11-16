@@ -239,7 +239,9 @@
 
         <div class="toolbar">
           <span class="muted small" id="conn-meta">—</span>
-          <span class="chip small" id="conn-paused" hidden
+          <!-- место под чип занято всегда: иначе при наведении строка тулбара
+               становится выше и таблица «прыгает» вниз на пару пикселей -->
+          <span class="chip small is-off" id="conn-paused"
                 title="Пока курсор в таблице, список не обновляется — чтобы строки не прыгали под курсором. Уберите курсор, и обновление продолжится.">⏸ пауза, пока курсор в таблице</span>
           <label class="sort-pick">
             <span class="sort-pick-lbl">Сортировка</span>
