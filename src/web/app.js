@@ -1907,7 +1907,7 @@
 
     var ok = false;
     try {
-      var body = explicit ? { names: list, url: testUrl() } : { url: testUrl() };
+      var body = explicit ? { names: list, url: opts.url || testUrl() } : { url: opts.url || testUrl() };
       var res = await postJson('/api/test', body, TEST_TIMEOUT);
       var got = explicit ? list : testResultNames(res);
       if (!got.length) throw new ApiError('демон не вернул результаты замера', '/api/test', 'EmptyTest');
@@ -2188,6 +2188,37 @@
     res.alive = alive;
     res.dead = dead;
     return res;
+  }
+
+  // Проверка произвольного адреса через конкретный узел: показывает,
+  // открывается ли сайт прокси-путём (а не браузером/системой).
+  async function checkUrlThrough() {
+    var node = currentChainNode();
+    if (!node) { toast('Демон не сообщил активный сервер', 'warn'); return; }
+    var input = $('cur-url');
+    var url = String(input ? input.value : '').trim();
+    if (!/^https?:\/\/\S+/i.test(url)) { toast('Адрес должен начинаться с http:// или https://', 'warn'); return; }
+    var st = $('cur-check-status');
+    function say(text, kind) {
+      if (!st) return;
+      st.textContent = text;
+      st.className = 'hint ' + (kind || '');
+    }
+    say('проверяю через ' + nodeLabel(node) + '…', '');
+    try {
+      var res = await postJson('/api/test', { names: [node], url: url }, 25000);
+      var r = res && res.results ? res.results[node] : null;
+      if (r && r.delay) {
+        say('открывается через ' + nodeLabel(node) + ' за ' + fmtDelay(r.delay), 'ok');
+        toast('Адрес открывается через ' + nodeLabel(node) + ' (' + fmtDelay(r.delay) + ')', 'ok', 5000);
+      } else {
+        var why = r && r.err ? ': ' + r.err : '';
+        say('не открывается через ' + nodeLabel(node) + why, 'bad');
+        toast('Адрес не открылся через ' + nodeLabel(node) + why, 'bad', 6000);
+      }
+    } catch (e) {
+      say('ошибка проверки: ' + friendlyError(e), 'bad');
+    }
   }
 
   function renderTopCard() {
@@ -5473,6 +5504,19 @@
 
     var langBtn = $('btn-lang');
     if (langBtn) langBtn.addEventListener('click', function () { setLang(LANG === 'en' ? 'ru' : 'en'); });
+    var curCheckBtn = $('btn-cur-check');
+    if (curCheckBtn) curCheckBtn.addEventListener('click', function () {
+      var i = $('cur-url');
+      try { localStorage.setItem('xrock.checkUrl', i ? i.value : ''); } catch (e) {}
+      checkUrlThrough();
+    });
+    var curUrl = $('cur-url');
+    if (curUrl) {
+      try { curUrl.value = localStorage.getItem('xrock.checkUrl') || ''; } catch (e) {}
+      curUrl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') { e.preventDefault(); if (curCheckBtn) curCheckBtn.click(); }
+      });
+    }
     var setupBtn = $('btn-setup-connect');
     if (setupBtn) setupBtn.addEventListener('click', connectFromSetup);
     var setupSkip = $('btn-setup-skip');

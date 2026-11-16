@@ -1316,6 +1316,14 @@ main#views { padding: 18px; }
   flex-wrap: wrap;
 }
 .cur-group { font-size: 12.5px; color: var(--muted); word-break: break-word; }
+.cur-check-box { padding-top: 0; }
+.cur-check-box .cur-check { margin-top: 0; }
+.cur-check { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+.cur-check .input { flex: 1 1 260px; min-width: 0; font-size: 12.5px; padding: 6px 9px; }
+.cur-check .btn { flex: 0 0 auto; }
+.hint.ok { color: var(--ok); }
+.hint.bad { color: var(--bad); }
+
 .cur-metrics { display: flex; flex-wrap: wrap; gap: 12px 26px; }
 .cur-targets {
   display: flex;
