@@ -386,6 +386,7 @@ func (a *app) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 		fail(w, 502, err.Error())
 		return
 	}
+	invalidateProxies()
 	a.addEvent("ok", "", "обновляю подписку «"+req.Name+"»")
 	writeJSON(w, map[string]any{"ok": true})
 }
@@ -567,6 +568,7 @@ func (a *app) routes(embedded fs.FS) http.Handler {
 	mux.HandleFunc("/api/test", a.handleTest)
 	mux.HandleFunc("/api/providers/update", a.handleProviderUpdate)
 	mux.HandleFunc("/api/sys", a.handleSys)
+	mux.HandleFunc("/api/asn", a.handleASN)
 	mux.HandleFunc("/api/versions", a.handleVersions)
 	mux.HandleFunc("/api/upgrade/core", a.handleUpgradeCore)
 	mux.HandleFunc("/api/upgrade/panel", a.handleUpgradePanel)

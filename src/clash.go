@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -225,7 +226,31 @@ func (c *clash) providers() (map[string]*providerItem, error) {
 // allProxies — группы/служебные из /proxies + узлы из провайдеров подписки.
 // mihomo НЕ отдаёт узлы провайдеров в /proxies, только в /providers/proxies,
 // поэтому без этого списка панель видела «0 серверов».
+//
+// /providers/proxies — тяжёлый ответ (сотни КБ), а UI опрашивает state каждые
+// 2–3 секунды, поэтому держим короткий кеш (2 с). После обновления подписки
+// кеш сбрасывается через invalidateProxies.
+var proxiesCache struct {
+	sync.Mutex
+	m map[string]*proxyItem
+	t int64
+}
+
+func invalidateProxies() {
+	proxiesCache.Lock()
+	proxiesCache.m = nil
+	proxiesCache.Unlock()
+}
+
 func (c *clash) allProxies() (map[string]*proxyItem, error) {
+	proxiesCache.Lock()
+	if proxiesCache.m != nil && time.Now().Unix()-proxiesCache.t < 2 {
+		m := proxiesCache.m
+		proxiesCache.Unlock()
+		return m, nil
+	}
+	proxiesCache.Unlock()
+
 	m, err := c.proxies()
 	if err != nil {
 		return nil, err
@@ -247,6 +272,9 @@ func (c *clash) allProxies() (map[string]*proxyItem, error) {
 			}
 		}
 	}
+	proxiesCache.Lock()
+	proxiesCache.m, proxiesCache.t = m, time.Now().Unix()
+	proxiesCache.Unlock()
 	return m, nil
 }
 
