@@ -9,7 +9,12 @@
   var API_KEY = 'xrock.api';
   var POLL_MS = 2500;          // опрос /api/state
   var CONN_MS = 2000;          // автообновление соединений
+  var SYS_MS = 4000;           // опрос ресурсов роутера (/api/sys)
+  var SYS_RETRY_MS = 30000;    // если демон не отдаёт /api/sys — не долбим его каждые 4 с
   var TEST_TIMEOUT = 120000;   // проксированный замер может быть долгим
+  var UPGRADE_TIMEOUT = 180000; // обновление ядра mihomo: синхронно, до 2–3 минут
+  var PANEL_WAIT_MS = 60000;   // ожидание перезапуска панели после обновления
+  var LONG_PRESS_MS = 450;     // удержание карточки узла = тест
   var VIEWS = ['overview', 'servers', 'connections', 'rules', 'subscription', 'journal', 'settings'];
 
   /* ------------------------------ состояние ------------------------------ */
@@ -24,8 +29,11 @@
     conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '' },
     rules: { list: [], search: '', at: 0, loading: false, err: '' },
     journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
-    servers: { autoTested: false, search: '', testing: false },
+    servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
     settings: { dirty: false, targetsDirty: false, inited: false },
+    sys: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
+    ver: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
+    upd: { kind: '', running: false, startedAt: 0, timer: null },
     pendingSelect: Object.create(null)
   };
 
@@ -38,13 +46,14 @@
     lastAuto: 0
   };
 
-  var timers = { poll: null, conns: null };
+  var timers = { poll: null, conns: null, sys: null };
   var streams = { traffic: null, logs: null, logLevel: '' };
   var pollPromise = null;
   var wdTargetsSig = '';
   var wdGroupsSig = '';
   var delayRev = 0;
   var serversSig = null;
+  var tabsScrolledTo = '';
   var rulesSig = '';
   var eventsSig = '';
 
@@ -203,6 +212,60 @@
     return 'bad';
   }
 
+  // не число (null/undefined/пусто) → null, чтобы в интерфейсе был прочерк, а не 0
+  function toNumOrNull(v) {
+    if (v === null || v === undefined || v === '') return null;
+    var n = Number(v);
+    return isFinite(n) ? n : null;
+  }
+
+  function fmtLoad(v) {
+    var n = toNumOrNull(v);
+    return n === null ? '—' : n.toFixed(2).replace('.', ',');
+  }
+
+  function fmtUptime(sec) {
+    sec = Math.max(0, Math.floor(num(sec)));
+    if (!sec) return '—';
+    var d = Math.floor(sec / 86400);
+    var h = Math.floor((sec % 86400) / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    if (d) return d + ' ' + plural(d, ['день', 'дня', 'дней']) + (h ? ' ' + h + ' ч' : '');
+    if (h) return h + ' ч ' + pad2(m) + ' мин';
+    return m + ' мин';
+  }
+
+  function tempLevel(c) {
+    var t = toNumOrNull(c);
+    if (t === null || t <= 0) return 'dim';
+    if (t < 60) return 'good';
+    if (t < 75) return 'warn';
+    return 'bad';
+  }
+
+  // Флаг страны из начала имени узла («🇩🇪 Germany-…») → эмодзи + двухбуквенный код.
+  var FLAG_RE = /^[\u{1F1E6}-\u{1F1FF}]{2}\uFE0F?\s*/u;
+  function splitFlag(name) {
+    var s = String(name === null || name === undefined ? '' : name).replace(/^\s+/, '');
+    var m = s.match(FLAG_RE);
+    if (m) {
+      var flag = s.slice(0, m[0].length).replace(/\uFE0F/g, '').trim();
+      var code = '';
+      for (var i = 0; i < flag.length; i++) {
+        var cp = flag.codePointAt(i);
+        if (cp >= 0x1F1E6 && cp <= 0x1F1FF) code += String.fromCharCode(cp - 0x1F1E6 + 65);
+        if (cp > 0xFFFF) i++;
+      }
+      return { flag: flag, code: code, rest: s.slice(m[0].length).trim() || s };
+    }
+    var latin = s.match(/[A-Za-zА-Яа-яЁё]{2}/);
+    return { flag: '', code: latin ? latin[0].toUpperCase() : '', rest: s };
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
+
   function normBase(value) {
     var v = String(value || '').trim();
     if (!v) return '';
@@ -290,6 +353,40 @@
     }, timeoutMs);
   }
 
+  // Как apiJson, но не бросает на HTTP-ошибке: нужен для /api/upgrade/*, где тело
+  // ответа (error + log) важно показать пользователю даже при коде 502.
+  async function apiFull(path, options, timeoutMs) {
+    var ms = timeoutMs || 9000;
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, ms);
+    var res, text;
+    try {
+      res = await fetch(ui.api + path, Object.assign({
+        method: 'GET',
+        signal: ctrl.signal,
+        cache: 'no-store',
+        mode: 'cors',
+        credentials: 'omit',
+        headers: { 'Accept': 'application/json' }
+      }, options || {}));
+      text = await res.text();
+    } catch (e) {
+      var msg = (e && e.name === 'AbortError')
+        ? 'таймаут запроса (' + Math.round(ms / 1000) + ' с)'
+        : friendlyError(e);
+      throw new ApiError(msg, path);
+    } finally {
+      clearTimeout(timer);
+    }
+    var data = text ? parseJson(text) : null;
+    return {
+      ok: res.ok && !(data && typeof data === 'object' && data.ok === false),
+      status: res.status,
+      data: data,
+      text: text || ''
+    };
+  }
+
   /* --------------------------- связь и индикаторы ------------------------ */
 
   function setBusy(btn, busy, label) {
@@ -340,6 +437,8 @@
     }
     var sideMihomo = $('side-mihomo');
     if (sideMihomo) sideMihomo.textContent = st && st.mihomo ? (st.mihomo.version || '—') : '—';
+    var sideVer = $('side-version');
+    if (sideVer) sideVer.textContent = 'xrock UI · ' + (st && st.version ? st.version : '—');
 
     var linkEl = $('link-state');
     if (!linkEl) return;
@@ -588,6 +687,7 @@
     renderTopbar();
     renderActive();
     maybeAutoTest();
+    if (ui.view === 'overview') maybeTestCurrent();
     if (ui.view === 'settings') fillWatchdogForm();
     if (!streams.traffic && !document.hidden) startTrafficStream();
     if (ui.view === 'overview') maybeLoadConnCount();
@@ -749,6 +849,15 @@
 
   /* ------------------------- проксированный замер ------------------------ */
 
+  function testbarText() {
+    var secs = delay.running ? Math.max(0, Math.round((Date.now() - delay.startedAt) / 1000)) : 0;
+    var txt = 'тест… ' + secs + ' с';
+    if (delay.total) {
+      txt += ' · ' + delay.total + ' ' + plural(delay.total, ['узел', 'узла', 'узлов']);
+    }
+    return txt;
+  }
+
   function renderTestBar() {
     var bar = $('srv-testbar');
     if (!bar) return;
@@ -756,10 +865,7 @@
     bar.hidden = !running;
     if (running) {
       var txt = $('srv-testbar-text');
-      if (txt) {
-        txt.textContent = 'Измеряю задержку через прокси: ' + delay.total + ' ' +
-          plural(delay.total, ['узел', 'узла', 'узлов']) + '…';
-      }
+      if (txt) txt.textContent = testbarText();
     }
     var b1 = $('btn-srv-test-all');
     var b2 = $('btn-test-all');
@@ -775,6 +881,14 @@
   function clearDelayPending(names) {
     delayRev++;
     for (var i = 0; i < names.length; i++) delete delay.testing[names[i]];
+  }
+
+  // имена узлов из ответа /api/test (демон может вернуть только results)
+  function testResultNames(res) {
+    var r = res && typeof res === 'object' ? (res.results !== undefined ? res.results : res.data) : null;
+    if (!r || typeof r !== 'object' || Array.isArray(r)) return [];
+    if (r.results && typeof r.results === 'object' && !Array.isArray(r.results)) r = r.results;
+    return Object.keys(r);
   }
 
   function applyTestResults(res, names) {
@@ -814,13 +928,16 @@
     }
   }
 
+  // names пусто/не массив → один POST /api/test без names: демон меряет все узлы
+  // одним запросом /group/{g}/delay (быстро и без дублирования на каждый узел).
   async function runTest(names, opts) {
     opts = opts || {};
     if (delay.running) {
       if (!opts.silent) toast('Проверка задержки уже идёт', 'warn');
       return false;
     }
-    var list = (Array.isArray(names) && names.length) ? names : allNodeNames();
+    var explicit = Array.isArray(names) && names.length > 0;
+    var list = explicit ? names.slice() : allNodeNames();
     if (!list.length) {
       if (!opts.silent) toast('Нет узлов для проверки — демон ещё не прислал состояние', 'warn');
       return false;
@@ -833,27 +950,29 @@
     if (ui.view === 'servers') renderServers();
     if (ui.view === 'overview') renderOverview();
 
-    var started = Date.now();
     var ticker = setInterval(function () {
+      if (!delay.running) return;
       var txt = $('srv-testbar-text');
-      if (!txt || !delay.running) return;
-      var secs = Math.round((Date.now() - started) / 1000);
-      txt.textContent = 'Измеряю задержку через прокси: ' + delay.total + ' ' +
-        plural(delay.total, ['узел', 'узла', 'узлов']) + '… ' + secs + ' с';
+      if (txt) txt.textContent = testbarText();
     }, 1000);
 
     var ok = false;
     try {
-      var res = await postJson('/api/test', { names: list, url: testUrl() }, TEST_TIMEOUT);
-      applyTestResults(res, list);
+      var body = explicit ? { names: list, url: testUrl() } : { url: testUrl() };
+      var res = await postJson('/api/test', body, TEST_TIMEOUT);
+      var got = explicit ? list : testResultNames(res);
+      if (!got.length) throw new ApiError('демон не вернул результаты замера', '/api/test', 'EmptyTest');
+      if (got.length > delay.total) delay.total = got.length;
+      applyTestResults(res, got);
+      clearDelayPending(got);
       ok = true;
       var alive = 0;
-      for (var i = 0; i < list.length; i++) {
-        var d = delay.map[list[i]];
+      for (var i = 0; i < got.length; i++) {
+        var d = delay.map[got[i]];
         if (d && !d.err) alive++;
       }
       if (!opts.silent) {
-        toast('Задержка измерена через прокси: ' + alive + ' из ' + list.length, alive ? 'ok' : 'warn', 3500);
+        toast('Задержка измерена через прокси: ' + alive + ' из ' + got.length, alive ? 'ok' : 'warn', 3500);
       }
     } catch (e) {
       if (!opts.silent) toast('Не удалось измерить задержку: ' + friendlyError(e), 'bad');
@@ -874,7 +993,8 @@
     if (!names.length) return;
     ui.servers.autoTested = true;
     delay.lastAuto = Date.now();
-    runTest(names, { silent: true });
+    // без names — демон меряет все узлы одним запросом; результат кешируется на сессию
+    runTest(null, { silent: true });
   }
 
   /* ------------------------------ навигация ------------------------------ */
@@ -919,10 +1039,12 @@
     }
 
     if (view !== 'connections') stopConnRefresh();
+    if (view !== 'overview') stopSysPoll();
 
     if (view === 'overview') {
       maybeTestCurrent();
       renderOverview();
+      startSysPoll();
     } else if (view === 'servers') {
       renderServers();
       renderTestBar();
@@ -943,6 +1065,8 @@
     } else if (view === 'settings') {
       initSettings();
       fillWatchdogForm();
+      renderUpdates();
+      loadVersions();
     }
 
     if (prev === 'journal' && view !== 'journal') stopLogStream();
@@ -954,7 +1078,9 @@
     var current = wd.current || (ui.state.groups[0] && ui.state.groups[0].now) || '';
     current = finalNode(current);
     if (!current) return;
-    if (delay.map[current] || (ui.state.stats && ui.state.stats[current])) return;
+    var tested = delay.map[current];
+    if (tested && !tested.err) return;
+    if (delay.testing[current]) return;
     if (Date.now() - delay.lastAuto < 20000) return;
     delay.lastAuto = Date.now();
     runTest([current], { silent: true });
@@ -1047,10 +1173,12 @@
       skeletonCard($('cur-body'), 4);
       skeletonCard($('wd-body'), 4);
       skeletonCard($('speed-body'), 3);
+      skeletonCard($('router-body'), 3);
       skeletonCard($('sub-body'), 3);
       skeletonCard($('conn-card-body'), 2);
       setBadge($('cur-badge'), 'muted', 'загрузка');
       setBadge($('wd-badge-overview'), 'muted', '—');
+      setBadge($('router-badge'), 'muted', 'загрузка');
       setBadge($('sub-badge'), 'muted', '—');
       setBadge($('conn-badge'), 'muted', '—');
       renderSpeedCard();
@@ -1059,6 +1187,7 @@
     renderCurrentCard(st);
     renderWatchdogCard(st);
     renderSpeedCard();
+    renderRouterCard();
     renderSubCard(st);
     renderConnsCard(st);
   }
@@ -1085,9 +1214,8 @@
 
     var stat = st.stats && st.stats[cur] ? st.stats[cur] : null;
     var tested = delay.map[cur];
-    var ms = 0;
-    if (tested && !tested.err) ms = tested.delay;
-    else if (stat && num(stat.delay) > 0) ms = num(stat.delay);
+    // Задержку показываем только после /api/test — никаких цифр из чужих источников.
+    var ms = tested && !tested.err ? tested.delay : 0;
 
     var healthText, healthCls;
     if (stat) {
@@ -1237,6 +1365,153 @@
     return s;
   }
 
+  /* ------------------------------- РОУТЕР -------------------------------- */
+
+  function looksLikeSys(d) {
+    if (!d || typeof d !== 'object') return false;
+    var keys = ['cpuPct', 'load1', 'memTotal', 'memAvail', 'memUsedPct', 'tempMax', 'uptimeSec', 'arch'];
+    for (var i = 0; i < keys.length; i++) {
+      if (Object.prototype.hasOwnProperty.call(d, keys[i])) return true;
+    }
+    return false;
+  }
+
+  function normalizeSys(raw) {
+    var o = raw && typeof raw === 'object' ? raw : {};
+    var temps = o.temps !== undefined ? o.temps : pick(o, ['temps', 'sensors']);
+    return {
+      cpuPct: toNumOrNull(pick(o, ['cpuPct', 'cpu'])),
+      load1: toNumOrNull(pick(o, ['load1', 'load'])),
+      memTotal: toNumOrNull(pick(o, ['memTotal'])),
+      memAvail: toNumOrNull(pick(o, ['memAvail', 'memAvailable'])),
+      memUsedPct: toNumOrNull(pick(o, ['memUsedPct'])),
+      tempMax: toNumOrNull(pick(o, ['tempMax', 'temp'])),
+      temps: Array.isArray(temps) ? temps.slice(0, 24) : [],
+      uptimeSec: toNumOrNull(pick(o, ['uptimeSec', 'uptime'])),
+      arch: String(pick(o, ['arch']) || ''),
+      model: String(pick(o, ['model']) || ''),
+      cores: toNumOrNull(pick(o, ['cores', 'numCpu']))
+    };
+  }
+
+  function sysFresh() {
+    return ui.sys.at > 0 && (Date.now() - ui.sys.at) < 12000;
+  }
+
+  async function loadSys(manual) {
+    if (ui.sys.loading) return;
+    ui.sys.loading = true;
+    ui.sys.triedAt = Date.now();
+    try {
+      var raw = await apiJson('/api/sys', null, 6000);
+      // Демон без /api/sys отдаёт index.html — это не ресурсы, показываем «нет данных».
+      if (!looksLikeSys(raw)) throw new ApiError('демон не отдаёт /api/sys', '/api/sys', 'NoSys');
+      ui.sys.data = normalizeSys(raw);
+      ui.sys.err = '';
+      ui.sys.at = Date.now();
+    } catch (e) {
+      ui.sys.err = friendlyError(e);
+      if (manual) toast('Ресурсы роутера недоступны: ' + ui.sys.err, 'bad');
+    } finally {
+      ui.sys.loading = false;
+      if (ui.view === 'overview') renderRouterCard();
+    }
+  }
+
+  function startSysPoll() {
+    stopSysPoll();
+    if (ui.view !== 'overview') return;
+    loadSys();
+    timers.sys = setInterval(function () {
+      if (document.hidden || ui.view !== 'overview') return;
+      // если API нет — редкие повторы, чтобы не дёргать демон каждые 4 секунды
+      if (!ui.sys.data && ui.sys.err && Date.now() - ui.sys.triedAt < SYS_RETRY_MS) return;
+      loadSys();
+    }, SYS_MS);
+  }
+
+  function stopSysPoll() {
+    if (timers.sys) { clearInterval(timers.sys); timers.sys = null; }
+  }
+
+  function renderRouterCard() {
+    var body = $('router-body');
+    if (!body) return;
+    clear(body);
+    var badge = $('router-badge');
+    var d = ui.sys.data;
+
+    if (!d) {
+      if (ui.sys.err) {
+        body.appendChild(el('div', { class: 'empty', text: 'Нет данных о ресурсах роутера' }));
+        body.appendChild(el('div', { class: 'hint', text: 'Демон не ответил на GET /api/sys (' + ui.sys.err + '). Нужен xrock с поддержкой ресурсов.' }));
+        setBadge(badge, 'muted', 'нет данных');
+      } else {
+        skeletonCard(body, 3);
+        setBadge(badge, 'muted', 'загрузка');
+      }
+      return;
+    }
+
+    var cpu = d.cpuPct;
+    var cpuCls = cpu === null ? 'dim' : cpu >= 85 ? 'bad' : cpu >= 60 ? 'warn' : 'good';
+    var gauge = el('div', {
+      class: 'gauge ' + cpuCls,
+      style: '--v:' + (cpu === null ? 0 : Math.max(0, Math.min(100, Math.round(cpu)))),
+      title: cpu === null ? 'Загрузка CPU: нет данных' : 'Загрузка CPU: ' + Math.round(cpu) + '%'
+    }, [
+      el('span', null, [
+        el('b', { text: cpu === null ? '—' : Math.round(cpu) + '%' }),
+        el('small', { text: 'CPU' })
+      ])
+    ]);
+
+    var temp = d.tempMax;
+    var tempsTitle = (d.temps || []).map(function (t) {
+      if (!t) return '';
+      return (t.name || 'датчик') + ' ' + (toNumOrNull(t.c) === null ? '—' : t.c + ' °C');
+    }).filter(Boolean).join('\n');
+    var metrics = el('div', { class: 'cur-metrics router-metrics' }, [
+      metric('температура', (temp === null || temp <= 0) ? '—' : Math.round(temp) + ' °C', tempLevel(temp),
+        tempsTitle || 'Максимум по термодатчикам роутера'),
+      metric('uptime', d.uptimeSec ? fmtUptime(d.uptimeSec) : '—', 'dim', d.uptimeSec ? fmtDur(d.uptimeSec) : ''),
+      metric('load average', fmtLoad(d.load1), 'dim', 'Средняя нагрузка за 1 минуту')
+    ]);
+
+    body.appendChild(el('div', { class: 'router-top' }, [
+      gauge,
+      el('div', { class: 'router-main' }, metrics)
+    ]));
+
+    var memTotal = d.memTotal;
+    var memAvail = d.memAvail;
+    var memPct = d.memUsedPct;
+    var usedKb = (memTotal !== null && memAvail !== null) ? Math.max(0, memTotal - memAvail) : null;
+    if ((memPct === null || memPct === undefined) && usedKb !== null && memTotal) {
+      memPct = Math.round((usedKb / memTotal) * 100);
+    }
+    var memText = '—';
+    if (memTotal !== null && memTotal > 0) {
+      memText = (usedKb !== null ? fmtBytes(usedKb * 1024) : '—') + ' / ' + fmtBytes(memTotal * 1024);
+      if (memPct !== null) memText += ' · ' + Math.round(memPct) + '%';
+    }
+    var pct = memPct === null || memPct === undefined ? 0 : Math.max(0, Math.min(100, Math.round(memPct)));
+    body.appendChild(el('div', { class: 'bar ' + (pct >= 90 ? 'bad' : pct >= 75 ? 'warn' : '') }, [
+      el('i', { style: 'width:' + pct + '%' })
+    ]));
+
+    var hw = [];
+    if (d.cores !== null) hw.push(d.cores + ' ' + plural(d.cores, ['ядро', 'ядра', 'ядер']));
+    if (d.arch) hw.push(d.arch);
+    body.appendChild(el('div', { class: 'kv' }, [
+      kvRow('Память', memText, 'занято / всего'),
+      kvRow('Ядра и архитектура', hw.length ? hw.join(' · ') : '—'),
+      kvRow('Модель', d.model || '—')
+    ]));
+
+    setBadge(badge, sysFresh() ? 'ok' : 'muted', sysFresh() ? 'live' : 'устарело');
+  }
+
   function providerStats(p) {
     var si = (p && (p.subscriptionInfo || p.subscription)) || {};
     var expireRaw = pick(si, ['expire', 'expireAt']);
@@ -1369,14 +1644,60 @@
     return a.idx - b.idx;
   }
 
+  function isSelector(group) {
+    return !!group && String(group.type || '').toLowerCase() === 'selector';
+  }
+
+  function groupNodeCount(g) {
+    if (!g) return 0;
+    var all = Array.isArray(g.all) ? g.all : [];
+    var n = 0;
+    for (var i = 0; i < all.length; i++) {
+      if (all[i] && !isGroupName(all[i])) n++;
+    }
+    return n;
+  }
+
+  // Выбранная группа: запомненная → watchdog.group → первая Selector → первая.
+  function serverGroup() {
+    var st = ui.state;
+    if (!st) return null;
+    var groups = (st.groups || []).filter(function (g) { return g && g.name; });
+    if (!groups.length) { ui.servers.group = ''; return null; }
+    var saved = ui.servers.group ? groupByName(ui.servers.group) : null;
+    if (saved) return saved;
+    var wdName = (st.watchdog && st.watchdog.group) || '';
+    var pick = wdName ? groupByName(wdName) : null;
+    if (!pick) {
+      for (var i = 0; i < groups.length; i++) {
+        if (isSelector(groups[i])) { pick = groups[i]; break; }
+      }
+    }
+    if (!pick) pick = groups[0];
+    ui.servers.group = pick.name;
+    return pick;
+  }
+
+  function isDeadOrErr(name) {
+    if (isDeadNode(name)) return true;
+    var d = delay.map[name];
+    if (d && d.err) return true;
+    if (isGroupName(name)) {
+      var f = finalNode(name);
+      if (f && f !== name && (isDeadNode(f) || (delay.map[f] && delay.map[f].err))) return true;
+    }
+    return false;
+  }
+
   function serversSignature() {
     var st = ui.state;
     if (!st) return 'nostate';
-    var parts = ['q:' + ui.servers.search, 'd:' + delayRev];
+    var g = serverGroup();
+    var parts = ['g:' + (g ? g.name : ''), 'q:' + ui.servers.search, 's:' + ui.servers.sort, 'd:' + delayRev];
     for (var i = 0; i < st.groups.length; i++) {
-      var g = st.groups[i] || {};
-      var all = g.all || [];
-      parts.push([g.name || '', g.now || '', all.length, all[0] || '', all[all.length - 1] || ''].join('|'));
+      var gi = st.groups[i] || {};
+      var all = gi.all || [];
+      parts.push([gi.name || '', gi.now || '', all.length, all[0] || '', all[all.length - 1] || ''].join('|'));
     }
     var wd = st.watchdog || {};
     parts.push('dead:' + (wd.dead || []).join('\u0001'));
@@ -1384,16 +1705,110 @@
     return parts.join('\u0002');
   }
 
+  function sortBtn(mode, label) {
+    return el('button', {
+      type: 'button',
+      class: 'seg-btn' + (ui.servers.sort === mode ? ' active' : ''),
+      'aria-pressed': ui.servers.sort === mode ? 'true' : 'false',
+      onclick: function () {
+        if (ui.servers.sort === mode) return;
+        ui.servers.sort = mode;
+        serversSig = null;
+        renderServers();
+      }
+    }, label);
+  }
+
+  function renderGroupTabs(st) {
+    var box = $('srv-tabs');
+    if (!box) return;
+    clear(box);
+    if (!st) return;
+    var activeName = ui.servers.group;
+    var groups = (st.groups || []).filter(function (g) { return g && g.name; });
+    groups.forEach(function (g) {
+      var active = g.name === activeName;
+      var nodes = groupNodeCount(g);
+      var now = g.now || '—';
+      box.appendChild(el('button', {
+        type: 'button',
+        class: 'gtab' + (active ? ' active' : ''),
+        role: 'tab',
+        'aria-selected': active ? 'true' : 'false',
+        title: g.name + ' · ' + (g.type || 'группа') + '\nтекущий: ' + now + '\n' + nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']),
+        dataset: { group: g.name }
+      }, [
+        el('span', { class: 'gtab-top' }, [
+          el('span', { class: 'gtab-name', text: g.name }),
+          el('span', { class: 'gtab-count', text: String(nodes) })
+        ]),
+        el('span', { class: 'gtab-sub' }, [
+          el('span', { class: 'gtab-type', text: g.type || 'группа' }),
+          el('span', { class: 'gtab-now', text: now })
+        ])
+      ]));
+    });
+    // Активная вкладка должна быть видна при горизонтальном скролле — но не
+    // возвращаем её насильно, если пользователь сам прокрутил вкладки.
+    var act = box.querySelector('.gtab.active');
+    if (act && activeName !== tabsScrolledTo) {
+      tabsScrolledTo = activeName;
+      var left = act.offsetLeft - box.offsetLeft;
+      if (left < box.scrollLeft || left + act.offsetWidth > box.scrollLeft + box.clientWidth) {
+        box.scrollLeft = Math.max(0, left - 8);
+      }
+    }
+  }
+
+  function renderServerPanelHead(group) {
+    var box = $('srv-panel-head');
+    if (!box) return;
+    clear(box);
+    if (!group) { box.hidden = true; return; }
+    box.hidden = false;
+
+    var selectable = isSelector(group);
+    var nodes = groupNodeCount(group);
+    var cur = el('span', { class: 'srv-cur', title: 'Текущий узел группы' }, [
+      el('span', { class: 'muted', text: 'текущий:' }),
+      el('b', { text: group.now || '—' })
+    ]);
+
+    box.appendChild(el('div', { class: 'srv-panel-title' }, [
+      el('h2', { text: group.name }),
+      el('span', { class: 'badge muted', text: group.type || 'группа' }),
+      el('span', { class: 'badge muted', text: nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']) }),
+      cur,
+      selectable ? null : el('span', { class: 'badge warn', text: 'авто' })
+    ]));
+
+    box.appendChild(el('div', { class: 'srv-panel-tools' }, [
+      el('span', { class: 'srv-note', text: selectable
+        ? 'клик — сделать активным · правый клик / удержание — тест'
+        : 'группа выбирает узел автоматически · тест — правый клик / удержание' }),
+      el('div', { class: 'seg small', role: 'group', 'aria-label': 'Сортировка' }, [
+        sortBtn('delay', 'по задержке'),
+        sortBtn('name', 'по имени')
+      ]),
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        title: 'Проверить задержку всех узлов группы через прокси',
+        onclick: function () { runTest(groupNodes(group)); }
+      }, 'Проверить группу')
+    ]));
+  }
+
   function renderServers() {
-    var wrap = $('srv-groups');
-    if (!wrap) return;
+    var grid = $('srv-grid');
+    if (!grid) return;
     var emptyEl = $('srv-empty');
     var countEl = $('srv-count');
     var st = ui.state;
+    var group = serverGroup();
 
     if (st) {
       var sig = serversSignature();
-      if (sig === serversSig && wrap.childNodes.length) {
+      if (sig === serversSig && grid.childNodes.length) {
         renderTestBar();
         return;
       }
@@ -1402,186 +1817,186 @@
       serversSig = null;
     }
 
-    clear(wrap);
+    renderGroupTabs(st);
+    clear(grid);
     renderDeadCard();
 
     if (!st) {
-      if (emptyEl) emptyEl.hidden = false;
+      if (emptyEl) {
+        emptyEl.hidden = false;
+        emptyEl.textContent = 'Нет данных о группах. Демон ещё не прислал состояние.';
+      }
       if (countEl) countEl.textContent = '';
+      renderServerPanelHead(null);
+      renderTestBar();
+      return;
+    }
+    if (!group) {
+      if (emptyEl) { emptyEl.hidden = false; emptyEl.textContent = 'Группы не найдены.'; }
+      if (countEl) countEl.textContent = '';
+      renderServerPanelHead(null);
       renderTestBar();
       return;
     }
     if (emptyEl) emptyEl.hidden = true;
 
     var q = (ui.servers.search || '').trim().toLowerCase();
-    var nodeNames = allNodeNames();
-    var groupsShown = 0;
-    var matched = 0;
-
-    st.groups.forEach(function (g) {
-      if (!g || !g.name) return;
-      var all = Array.isArray(g.all) ? g.all : [];
-
-      var subGroups = [];
-      var nodes = [];
-      all.forEach(function (name, idx) {
-        if (!name) return;
-        if (isGroupName(name)) subGroups.push({ name: name, idx: idx });
-        else nodes.push({ name: name, idx: idx });
-      });
-      subGroups.sort(function (a, b) { return a.idx - b.idx; });
-      nodes.sort(nodeComparator);
-
-      var rows = subGroups.concat(nodes);
-      if (q) {
-        rows = rows.filter(function (r) { return r.name.toLowerCase().indexOf(q) >= 0; });
-      }
-      if (!rows.length && q) return;
-      groupsShown++;
-      matched += rows.length;
-
-      var nodeTotal = groupNodes(g).length;
-      var subTotal = all.filter(function (n) { return isGroupName(n); }).length;
-      var groupBadgeText = q
-        ? rows.length + ' из ' + all.length
-        : nodeTotal + ' ' + plural(nodeTotal, ['узел', 'узла', 'узлов']) +
-          (subTotal ? ' · ' + subTotal + ' ' + plural(subTotal, ['подгруппа', 'подгруппы', 'подгрупп']) : '');
-
-      var groupCard = el('article', { class: 'group' });
-
-      var gChain = activeChain(g.name);
-      var gNowFinal = finalNode(g.now || '');
-      var head = el('div', { class: 'group-head' }, [
-        el('span', { class: 'group-name', text: g.name }),
-        el('span', { class: 'badge muted', text: g.type || 'группа' }),
-        el('span', { class: 'group-cur' }, [
-          el('span', { text: 'текущий:' }),
-          el('b', { text: g.now || '—' }),
-          gNowFinal && gNowFinal !== g.now ? el('span', { class: 'muted', text: '→ ' + gNowFinal }) : null
-        ]),
-        el('span', { class: 'group-meta' }, [
-          el('span', { class: 'badge muted', text: groupBadgeText }),
-          el('button', {
-            type: 'button', class: 'btn small ghost',
-            title: 'Проверить задержку всех узлов группы через прокси',
-            onclick: function (e) {
-              e.stopPropagation();
-              runTest(groupNodes(g));
-            }
-          }, 'Тест группы')
-        ])
-      ]);
-      groupCard.appendChild(head);
-
-      var nodesBox = el('div', { class: 'nodes' });
-      rows.forEach(function (r, i) {
-        nodesBox.appendChild(buildNodeRow(r.name, g, i));
-      });
-      groupCard.appendChild(nodesBox);
-      wrap.appendChild(groupCard);
+    var all = Array.isArray(group.all) ? group.all : [];
+    var subs = [], nodes = [];
+    all.forEach(function (name, idx) {
+      if (!name) return;
+      if (isGroupName(name)) subs.push({ name: name, idx: idx });
+      else nodes.push({ name: name, idx: idx });
     });
 
-    if (!groupsShown) {
-      wrap.appendChild(el('div', { class: 'empty', text: q ? 'Ничего не найдено по запросу «' + ui.servers.search + '»' : 'Группы не найдены.' }));
+    var entries = subs.concat(nodes);
+    if (q) {
+      entries = entries.filter(function (r) { return r.name.toLowerCase().indexOf(q) >= 0; });
     }
+    if (ui.servers.sort === 'name') {
+      entries.sort(function (a, b) { return a.name.localeCompare(b.name, 'ru'); });
+    } else {
+      entries.sort(nodeComparator);
+    }
+
+    var alive = [], dead = [];
+    entries.forEach(function (r) {
+      if (isDeadOrErr(r.name)) dead.push(r);
+      else alive.push(r);
+    });
+
+    alive.forEach(function (r) { grid.appendChild(buildNodeCard(r.name, group)); });
+    if (dead.length) {
+      grid.appendChild(el('div', { class: 'node-grid-sep' }, [
+        el('span', { class: 'badge bad', text: 'не отвечают' }),
+        el('span', { class: 'hint', text: 'по данным сторожа или последнего замера' })
+      ]));
+      dead.forEach(function (r) { grid.appendChild(buildNodeCard(r.name, group)); });
+    }
+    if (!entries.length) {
+      grid.appendChild(el('div', { class: 'empty srv-grid-empty', text: q
+        ? 'В группе «' + group.name + '» ничего не найдено по запросу «' + ui.servers.search + '»'
+        : 'В группе «' + group.name + '» нет узлов.' }));
+    }
+
+    renderServerPanelHead(group);
+
     if (countEl) {
-      countEl.textContent = nodeNames.length
-        ? nodeNames.length + ' ' + plural(nodeNames.length, ['узел', 'узла', 'узлов']) + ' · ' + st.groups.length + ' ' + plural(st.groups.length, ['группа', 'группы', 'групп']) + (q ? ' · найдено ' + matched : '')
+      var total = allNodeNames().length;
+      countEl.textContent = total
+        ? total + ' ' + plural(total, ['узел', 'узла', 'узлов']) + ' · ' +
+          st.groups.length + ' ' + plural(st.groups.length, ['группа', 'группы', 'групп']) +
+          (q ? ' · найдено ' + entries.length : '')
         : '';
     }
     renderTestBar();
   }
 
-  function buildNodeRow(name, group, index) {
+  function nodeTypeText(name) {
     var proxy = proxyByName(name);
-    var isGroup = isGroupName(name);
-    var current = false;
-    if (group) current = group.now === name || (!!group.now && finalNode(group.now) === name);
-    var dead = isDeadNode(name);
-    var row = el('div', {
-      class: 'node' + (current ? ' current' : '') + (dead ? ' dead' : ''),
-      dataset: { name: name }
-    });
-
-    var title = el('span', { class: 'node-title' }, [el('span', { text: name })]);
-    if (isGroup) title.appendChild(el('span', { class: 'badge muted', text: 'группа' }));
-    if (dead) title.appendChild(el('span', { class: 'badge bad', text: 'мёртв' }));
-
-    var subText;
-    if (isGroup) {
-      var sub = proxyByName(name);
-      subText = 'подгруппа' + (sub ? ' · ' + sub.type : '');
-    } else if (proxy) {
-      subText = (proxy.type || 'узел') + (proxy.udp ? ' · UDP' : '') + (proxy.provider ? ' · ' + proxy.provider : '');
-    } else {
-      subText = 'узел';
-    }
-
-    var nameCell = el('div', { class: 'node-name' }, [
-      title,
-      el('span', { class: 'node-sub', text: subText })
-    ]);
-
-    var typeCell = el('span', { class: 'node-type', text: isGroup ? 'group' : (proxy && proxy.type ? proxy.type : '—') });
-
-    var delayCell;
-    if (isGroup) {
-      var target = finalNode(group ? (group.now === name ? name : group.now) : name);
-      delayCell = delayBadge(target, { unknownTitle: 'Задержка активного узла подгруппы' });
-      delayCell.title = 'Задержка активного узла подгруппы: ' + (target || '—');
-    } else {
-      delayCell = delayBadge(name);
-      delayCell.classList.add('clickable');
-      delayCell.addEventListener('click', function (e) {
-        e.stopPropagation();
-        runTest([name]);
-      });
-    }
-
-    var actions = el('div', { class: 'node-actions' });
-    if (!current) {
-      var btn = el('button', {
-        type: 'button', class: 'btn small primary',
-        onclick: function (e) {
-          e.stopPropagation();
-          selectNode(group ? group.name : '', name, btn);
-        }
-      }, 'Сделать активным');
-      actions.appendChild(btn);
-    } else {
-      actions.appendChild(el('span', { class: 'badge ok', text: 'активен' }));
-    }
-
-    row.appendChild(nameCell);
-    row.appendChild(typeCell);
-    row.appendChild(delayCell);
-    row.appendChild(actions);
-    bindNodeGestures(row, name);
-    return row;
+    if (proxy && proxy.type) return proxy.type;
+    var g = groupByName(name);
+    if (g && g.type) return g.type;
+    if (name === 'DIRECT') return 'Direct';
+    if (name === 'REJECT' || name === 'REJECT-DROP') return 'Reject';
+    return 'узел';
   }
 
-  function bindNodeGestures(row, name) {
+  function buildNodeCard(name, group) {
+    var isSub = isGroupName(name);
+    var proxy = isSub ? null : proxyByName(name);
+    var selectable = isSelector(group);
+    var current = !!group && group.now === name;
+    var target = isSub ? finalNode(name) : name;
+    var dead = isDeadOrErr(name);
+    var fl = splitFlag(name);
+    var key = (group ? group.name : '') + '\u0000' + name;
+    var pending = !!ui.pendingSelect[key];
+
+    var card = el('button', {
+      type: 'button',
+      class: 'ncard' + (current ? ' current' : '') + (dead ? ' dead' : '') +
+        (selectable ? '' : ' auto') + (pending ? ' pending' : ''),
+      dataset: { name: name },
+      title: name + '\n' + (isSub ? 'подгруппа · ' + nodeTypeText(name) : nodeTypeText(name)) +
+        '\nклик — ' + (selectable ? 'сделать активным' : 'группа выбирает автоматически') +
+        '\nправый клик / удержание — тест'
+    });
+
+    card.appendChild(el('span', { class: 'ncard-top' }, [
+      el('span', { class: 'node-flag', title: fl.code || '' }, fl.flag || fl.code || '•'),
+      el('span', { class: 'ncard-name', text: fl.flag ? fl.rest : name }),
+      current ? el('span', { class: 'ncard-check', text: '✓', title: 'Активный узел группы' }) : null
+    ]));
+
+    var meta = el('span', { class: 'ncard-meta' }, [
+      isSub ? el('span', { class: 'badge muted', text: 'группа' }) : null,
+      el('span', { class: 'ncard-type', text: nodeTypeText(name) }),
+      !isSub && proxy && proxy.udp ? el('span', { class: 'ncard-udp', text: 'UDP' }) : null,
+      dead ? el('span', { class: 'badge bad', text: 'мёртв' }) : null
+    ]);
+    if (isSub && target && target !== name) {
+      meta.appendChild(el('span', {
+        class: 'ncard-via',
+        text: '→ ' + trim(target, 24),
+        title: 'Активный узел подгруппы: ' + target
+      }));
+    }
+    card.appendChild(meta);
+
+    var badge = delayBadge(target, {
+      unknownTitle: 'Задержка ещё не измерена — правый клик / удержание по карточке запустит тест'
+    });
+    if (isSub) {
+      badge.title = (target && target !== name ? 'Задержка узла «' + target + '»: ' : 'Задержка: ') + (badge.title || '');
+    }
+
+    var right;
+    if (pending) {
+      right = el('span', { class: 'ncard-switch' }, [el('span', { class: 'spinner' }), el('span', { text: 'переключаю…' })]);
+    } else if (current) {
+      right = el('span', { class: 'badge ok ncard-active', text: '✓ активен' });
+    } else if (!selectable) {
+      right = el('span', { class: 'badge muted', text: 'авто' });
+    } else {
+      right = el('span', { class: 'ncard-hint', text: isSub ? 'выбрать группу' : 'выбрать' });
+    }
+    card.appendChild(el('span', { class: 'ncard-foot' }, [badge, right]));
+
+    bindNodeGestures(card, name, group);
+    return card;
+  }
+
+  function bindNodeGestures(card, name, group) {
     var timer = null;
-    var startX = 0, startY = 0, moved = false;
+    var startX = 0, startY = 0, moved = false, suppress = false, lastFire = 0;
     function cancel() {
       if (timer) { clearTimeout(timer); timer = null; }
     }
-    row.addEventListener('pointerdown', function (e) {
+    function fireTest(suppressClick) {
+      var now = Date.now();
+      // на некоторых браузерах долгое нажатие приходит и таймером, и contextmenu
+      if (now - lastFire < 900) return;
+      lastFire = now;
+      cancel();
+      if (suppressClick) suppress = true;
+      card.classList.add('pressing');
+      setTimeout(function () { card.classList.remove('pressing'); }, 320);
+      testNode(name, group);
+    }
+    card.addEventListener('pointerdown', function (e) {
       if (e.button !== undefined && e.button !== 0) return;
-      if (e.target && e.target.closest && e.target.closest('button, a')) return;
       moved = false;
+      suppress = false;
       startX = e.clientX;
       startY = e.clientY;
       cancel();
       timer = setTimeout(function () {
         timer = null;
-        if (!moved) {
-          row.classList.add('pressing');
-          runTest([name]);
-        }
-      }, 550);
+        if (!moved) fireTest(true);
+      }, LONG_PRESS_MS);
     });
-    row.addEventListener('pointermove', function (e) {
+    card.addEventListener('pointermove', function (e) {
       if (!timer) return;
       if (Math.abs(e.clientX - startX) > 12 || Math.abs(e.clientY - startY) > 12) {
         moved = true;
@@ -1589,32 +2004,64 @@
       }
     });
     ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) {
-      row.addEventListener(ev, cancel);
+      card.addEventListener(ev, cancel);
     });
-    row.addEventListener('contextmenu', function (e) {
+    card.addEventListener('contextmenu', function (e) {
       e.preventDefault();
-      cancel();
-      runTest([name]);
+      fireTest(false);
+    });
+    card.addEventListener('click', function (e) {
+      e.preventDefault();
+      if (suppress) { suppress = false; return; }
+      chooseNode(name, group);
+    });
+    card.addEventListener('keydown', function (e) {
+      if (e.key === 't' || e.key === 'T' || (e.shiftKey && e.key === 'Enter')) {
+        e.preventDefault();
+        fireTest(false);
+      }
     });
   }
 
-  async function selectNode(groupName, name, btn) {
-    if (!groupName) { toast('Не удалось определить группу узла', 'bad'); return; }
-    if (ui.pendingSelect[name]) return;
-    ui.pendingSelect[name] = true;
-    setBusy(btn, true, 'Переключаю…');
+  function testNode(name, group) {
+    if (delay.running) {
+      toast('Тест уже идёт — дождитесь результата', 'warn');
+      return;
+    }
+    var isSub = isGroupName(name);
+    var target = isSub ? finalNode(name) : name;
+    if (!target) return;
+    if (isSub && target !== name) {
+      toast('Тест подгруппы «' + name + '»: измеряю активный узел ' + target, 'info', 2800);
+    }
+    runTest([target]);
+  }
+
+  async function chooseNode(name, group) {
+    if (!group) return;
+    if (!isSelector(group)) {
+      toast('Группа «' + group.name + '» (' + (group.type || 'группа') + ') выбирает узел автоматически', 'warn', 3600);
+      return;
+    }
+    if (group.now === name) return; // уже активен
+    var key = group.name + '\u0000' + name;
+    if (ui.pendingSelect[key]) return;
+    ui.pendingSelect[key] = true;
+    serversSig = null;
+    renderServers();
     try {
-      await postJson('/api/select', { group: groupName, name: name }, 15000);
-      var g = groupByName(groupName);
+      await postJson('/api/select', { group: group.name, name: name }, 15000);
+      var g = groupByName(group.name);
       if (g) g.now = name;
-      toast('Выбран ' + name, 'ok', 3000);
-      if (ui.view === 'servers') renderServers();
+      toast(isGroupName(name) ? 'Группа «' + group.name + '» → ' + name : 'Выбран ' + name, 'ok', 3200);
       pollState();
     } catch (e) {
       toast('Не удалось переключить: ' + friendlyError(e), 'bad');
-      setBusy(btn, false, 'Сделать активным');
     } finally {
-      delete ui.pendingSelect[name];
+      delete ui.pendingSelect[key];
+      serversSig = null;
+      if (ui.view === 'servers') renderServers();
+      else if (ui.view === 'overview') renderOverview();
     }
   }
 
@@ -2152,6 +2599,320 @@
     }
   }
 
+  /* ------------------------------ ОБНОВЛЕНИЯ ----------------------------- */
+
+  function normVerPart(v) {
+    var o = v && typeof v === 'object' ? v : {};
+    var current = o.current !== undefined && o.current !== null ? String(o.current) : '';
+    var latest = o.latest !== undefined && o.latest !== null ? String(o.latest) : '';
+    var upd = o.updateAvailable;
+    if (upd === undefined || upd === null) upd = !!(current && latest && current !== latest);
+    return { current: current, latest: latest, updateAvailable: !!upd };
+  }
+
+  function setVerItem(kind, part) {
+    var cur = $('upd-' + kind + '-cur');
+    var lat = $('upd-' + kind + '-latest');
+    var badge = $('upd-' + kind + '-badge');
+    if (cur) {
+      cur.textContent = part.current || '—';
+      cur.title = part.current ? 'Текущая версия: ' + part.current : 'Текущая версия неизвестна';
+    }
+    if (lat) {
+      lat.textContent = part.latest || (ui.ver.err ? 'неизвестно' : '—');
+      lat.className = 'upd-latest' + (part.updateAvailable ? ' new' : '');
+      if (part.latest) lat.title = 'Последняя доступная версия: ' + part.latest;
+    }
+    if (badge) {
+      if (!part.current && !part.latest) setBadge(badge, 'muted', 'нет данных');
+      else if (!part.latest) setBadge(badge, 'muted', 'последняя неизвестна');
+      else if (part.updateAvailable) setBadge(badge, 'warn', 'обновление доступно');
+      else setBadge(badge, 'ok', 'обновлений нет');
+    }
+  }
+
+  function renderUpdates() {
+    var data = ui.ver.data;
+    var x = data && data.xrock ? data.xrock : { current: '', latest: '', updateAvailable: false };
+    var m = data && data.mihomo ? data.mihomo : { current: '', latest: '', updateAvailable: false };
+    setVerItem('xrock', x);
+    setVerItem('mihomo', m);
+
+    var badge = $('upd-badge');
+    if (badge) {
+      if (ui.ver.loading) setBadge(badge, 'muted', 'проверяю…');
+      else if (ui.ver.err && !data) setBadge(badge, 'warn', 'нет данных');
+      else if (x.updateAvailable || m.updateAvailable) setBadge(badge, 'warn', 'есть обновления');
+      else if (!x.latest && !m.latest) setBadge(badge, 'muted', data ? 'обновления неизвестны' : 'нет данных');
+      else setBadge(badge, 'ok', 'актуально');
+    }
+
+    var status = $('upd-status');
+    if (status) {
+      if (ui.ver.err) status.textContent = 'версии недоступны: ' + ui.ver.err;
+      else if (data && !x.latest && !m.latest) {
+        status.textContent = 'последние версии не получены' +
+          (data.checkedAt ? ' · проверено ' + fmtAgo(data.checkedAt) : '') +
+          ' — проверьте связь роутера с GitHub';
+      } else if (data && data.checkedAt) status.textContent = 'проверено ' + fmtAgo(data.checkedAt);
+      else status.textContent = '';
+    }
+    setUpdButtons();
+  }
+
+  async function loadVersions(force) {
+    if (ui.ver.loading) return;
+    if (!force && ui.ver.data && (Date.now() - ui.ver.at) < 60000) {
+      renderUpdates();
+      return;
+    }
+    ui.ver.loading = true;
+    ui.ver.triedAt = Date.now();
+    renderUpdates();
+    try {
+      var raw = await apiJson('/api/versions', null, 20000);
+      if (!raw || typeof raw !== 'object' || (!raw.xrock && !raw.mihomo)) {
+        throw new ApiError('демон не отдаёт /api/versions', '/api/versions', 'NoVersions');
+      }
+      ui.ver.data = {
+        xrock: normVerPart(raw.xrock),
+        mihomo: normVerPart(raw.mihomo),
+        checkedAt: num(pick(raw, ['checkedAt'])) || 0
+      };
+      ui.ver.err = '';
+      ui.ver.at = Date.now();
+    } catch (e) {
+      ui.ver.err = friendlyError(e);
+      // Фолбэк: текущие версии есть в /api/state, последние — неизвестны.
+      var st = ui.state;
+      ui.ver.data = {
+        xrock: { current: st && st.version ? String(st.version) : '', latest: '', updateAvailable: false },
+        mihomo: { current: st && st.mihomo && st.mihomo.version ? String(st.mihomo.version) : '', latest: '', updateAvailable: false },
+        checkedAt: 0
+      };
+      if (force) toast('Версии недоступны: ' + ui.ver.err, 'bad');
+    } finally {
+      ui.ver.loading = false;
+      renderUpdates();
+    }
+  }
+
+  function setUpdProgress(text) {
+    var box = $('upd-progress');
+    var txt = $('upd-progress-text');
+    if (!box) return;
+    if (text === null) {
+      box.hidden = true;
+      if (txt) txt.textContent = '…';
+      return;
+    }
+    box.hidden = false;
+    if (txt) txt.textContent = text;
+  }
+
+  function setUpdSpinning(on) {
+    var box = $('upd-progress');
+    var sp = box ? box.querySelector('.spinner') : null;
+    if (sp) sp.hidden = !on;
+  }
+
+  function showUpdLog(lines, isError) {
+    var pre = $('upd-log');
+    if (!pre) return;
+    var arr = Array.isArray(lines) ? lines : [];
+    var text = [];
+    for (var i = 0; i < arr.length; i++) {
+      if (arr[i] === null || arr[i] === undefined) continue;
+      var s = stripAnsi(String(arr[i])).replace(/\s+$/, '');
+      if (s) text.push(s);
+    }
+    pre.textContent = text.join('\n');
+    pre.hidden = !text.length;
+    pre.className = 'upd-log' + (isError ? ' error' : '');
+    pre.scrollTop = pre.scrollHeight;
+  }
+
+  function startUpdTimer(prefix, note) {
+    stopUpdTimer();
+    setUpdSpinning(true);
+    ui.upd.startedAt = Date.now();
+    function tick() {
+      var secs = Math.floor((Date.now() - ui.upd.startedAt) / 1000);
+      setUpdProgress(prefix + ' ' + secs + ' с' + (note ? ' · ' + note : ''));
+    }
+    tick();
+    ui.upd.timer = setInterval(tick, 1000);
+  }
+
+  function stopUpdTimer() {
+    if (ui.upd.timer) { clearInterval(ui.upd.timer); ui.upd.timer = null; }
+  }
+
+  function setUpdButtons() {
+    var running = ui.upd.running;
+    ['btn-upd-core', 'btn-upd-panel', 'btn-upd-check'].forEach(function (id) {
+      var b = $(id);
+      if (b) b.disabled = running;
+    });
+  }
+
+  function upgradeError(r) {
+    var d = r && r.data;
+    if (d && typeof d === 'object' && d.error) return String(d.error);
+    if (replyIsHtml(r)) return 'демон не поддерживает обновление — нужен xrock с /api/upgrade';
+    if (r && r.text) return 'HTTP ' + r.status + ' — ' + trim(r.text, 200);
+    return 'неизвестная ошибка';
+  }
+
+  function replyIsHtml(r) {
+    return !!(r && !r.data && /^\s*<!doctype html/i.test(r.text || ''));
+  }
+
+  // Строки для лога обновления: HTML-фолбэк SPA показывать не нужно.
+  function upgradeLogLines(r, d) {
+    var lines = d && Array.isArray(d.log) ? d.log.slice() : [];
+    var hasData = !!(d && typeof d === 'object' && Object.keys(d).length);
+    if (replyIsHtml(r)) lines.push('демон вернул HTML вместо JSON — вероятно, это старая версия xrock без /api/upgrade');
+    else if (!lines.length && r && r.text && !hasData) lines.push(r.text);
+    if (d && d.error) lines.push('Ошибка: ' + d.error);
+    return lines;
+  }
+
+  // Успех обновления — только валидный JSON с ok !== false. Старый демон отвечает
+  // на неизвестный путь index.html (200), это не успех.
+  function upgradeReplyOK(r) {
+    return !!(r && r.ok && r.data && typeof r.data === 'object' && r.data.ok !== false);
+  }
+
+  async function waitDaemonUp() {
+    var deadline = Date.now() + PANEL_WAIT_MS;
+    // даём демону реально уйти на перезапуск, иначе первый ping ответит старым процессом
+    await sleep(2500);
+    while (Date.now() < deadline) {
+      try {
+        var r = await apiFull('/api/ping', null, 4000);
+        if (r.ok && (!r.data || r.data.ok !== false)) return true;
+      } catch (e) {
+        // демон ещё перезапускается
+      }
+      await sleep(2000);
+    }
+    return false;
+  }
+
+  async function upgradeCore() {
+    if (ui.upd.running) return;
+    var ok = await confirmDialog({
+      title: 'Обновить ядро mihomo?',
+      text: 'Демон скачает актуальную версию mihomo и перезапустит ядро. VPN перезапустится на 10–20 секунд: активные соединения прервутся.',
+      okLabel: 'Обновить ядро'
+    });
+    if (!ok) return;
+
+    ui.upd.running = true;
+    ui.upd.kind = 'core';
+    setUpdButtons();
+    showUpdLog([], false);
+    startUpdTimer('обновляю ядро mihomo…', 'может занять до 3 минут');
+    try {
+      var r = await apiFull('/api/upgrade/core', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: '{}'
+      }, UPGRADE_TIMEOUT);
+      var d = r.data && typeof r.data === 'object' ? r.data : {};
+      var lines = Array.isArray(d.log) ? d.log : [];
+      if (!upgradeReplyOK(r)) {
+        setUpdProgress('ошибка обновления ядра: ' + upgradeError(r));
+        showUpdLog(upgradeLogLines(r, d), true);
+        toast('Ядро не обновлено: ' + upgradeError(r), 'bad', 9000);
+        return;
+      }
+      showUpdLog(lines, false);
+      var msg = (d.before && d.after)
+        ? (d.before !== d.after ? 'mihomo ' + d.before + ' → ' + d.after : 'mihomo уже ' + d.after)
+        : 'ядро обновлено';
+      toast(msg, 'ok', 6000);
+      setUpdProgress('готово · ' + msg);
+      await pollState();
+      await loadVersions(true);
+    } catch (e) {
+      var err = friendlyError(e);
+      showUpdLog([err], true);
+      setUpdProgress('ошибка: ' + err);
+      toast('Не удалось обновить ядро: ' + err, 'bad', 9000);
+    } finally {
+      stopUpdTimer();
+      setUpdSpinning(false);
+      ui.upd.running = false;
+      ui.upd.kind = '';
+      setUpdButtons();
+      renderUpdates();
+    }
+  }
+
+  async function upgradePanel() {
+    if (ui.upd.running) return;
+    var ok = await confirmDialog({
+      title: 'Обновить панель xrock?',
+      text: 'Демон скачает последний релиз, заменит бинарник и интерфейс и перезапустит сервис. Панель будет недоступна 5–20 секунд, затем страница обновится сама.',
+      okLabel: 'Обновить панель'
+    });
+    if (!ok) return;
+
+    ui.upd.running = true;
+    ui.upd.kind = 'panel';
+    setUpdButtons();
+    showUpdLog([], false);
+    startUpdTimer('обновляю панель xrock…', 'ждём ответа демона');
+    try {
+      var r = await apiFull('/api/upgrade/panel', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: '{}'
+      }, 90000);
+      var d = r.data && typeof r.data === 'object' ? r.data : {};
+      if (!upgradeReplyOK(r)) {
+        setUpdProgress('ошибка обновления панели: ' + upgradeError(r));
+        showUpdLog(upgradeLogLines(r, d), true);
+        toast('Панель не обновлена: ' + upgradeError(r), 'bad', 9000);
+        return;
+      }
+      var msg = (d.before && d.after) ? 'xrock ' + d.before + ' → ' + d.after : 'панель обновлена';
+      var noOp = !!(d.before && d.after && d.before === d.after) || d.restarting === false;
+      if (noOp) {
+        showUpdLog([msg, 'перезапуск не требуется — установлена последняя версия'], false);
+        setUpdProgress('готово · ' + msg);
+        toast('Панель уже актуальна: ' + (d.after || ''), 'ok', 6000);
+        await loadVersions(false);
+        return;
+      }
+      showUpdLog([msg, 'демон перезапускается, ждём /api/ping…'], false);
+      startUpdTimer('панель перезапускается…', 'ждём до 60 с');
+      var alive = await waitDaemonUp();
+      if (!alive) {
+        setUpdProgress('демон не ответил за 60 с — обновите страницу вручную');
+        toast('Панель не ответила за 60 секунд. Обновите страницу вручную.', 'warn', 9000);
+        return;
+      }
+      setUpdProgress('демон отвечает — перезагружаю страницу…');
+      toast('Панель обновлена — перезагружаю страницу', 'ok', 3000);
+      setTimeout(function () { location.reload(); }, 500);
+    } catch (e) {
+      var err2 = friendlyError(e);
+      showUpdLog([err2], true);
+      setUpdProgress('ошибка: ' + err2);
+      toast('Не удалось обновить панель: ' + err2, 'bad', 9000);
+    } finally {
+      stopUpdTimer();
+      setUpdSpinning(false);
+      ui.upd.running = false;
+      ui.upd.kind = '';
+      setUpdButtons();
+      renderUpdates();
+    }
+  }
+
   /* ------------------------------- НАСТРОЙКИ ----------------------------- */
 
   function initSettings() {
@@ -2334,6 +3095,9 @@
   function resetForApiChange() {
     stopTrafficStream();
     stopLogStream();
+    stopSysPoll();
+    stopUpdTimer();
+    setUpdSpinning(false);
     ui.state = null;
     ui.seen = false;
     ui.link = { ok: false, err: '', fails: 0, version: '' };
@@ -2352,17 +3116,27 @@
     delay.running = false;
     delay.lastAuto = 0;
     ui.servers.autoTested = false;
+    ui.servers.group = '';
+    ui.sys = { data: null, at: 0, triedAt: 0, loading: false, err: '' };
+    ui.ver = { data: null, at: 0, triedAt: 0, loading: false, err: '' };
+    ui.upd = { kind: '', running: false, startedAt: 0, timer: null };
     ui.pendingSelect = Object.create(null);
     ui.journal.logs = [];
     var logList = $('log-list');
     if (logList) clear(logList);
+    serversSig = null;
+    tabsScrolledTo = '';
+    showUpdLog([], false);
+    setUpdProgress(null);
     hideBanner();
     renderTopbar();
     renderActive();
     renderSpeedCard();
+    renderUpdates();
     if (!document.hidden) startTrafficStream();
     if (ui.view === 'connections') loadConnections();
     if (ui.view === 'rules') loadRules();
+    if (ui.view === 'overview') startSysPoll();
   }
 
   function applyApi() {
@@ -2494,19 +3268,44 @@
     var btnBest = $('btn-best');
     if (btnBest) btnBest.addEventListener('click', switchToBest);
     var btnTestAll = $('btn-test-all');
-    if (btnTestAll) btnTestAll.addEventListener('click', function () { runTest(allNodeNames()); });
+    if (btnTestAll) btnTestAll.addEventListener('click', function () { runTest(null); });
     var btnSubUpdate = $('btn-sub-update');
     if (btnSubUpdate) btnSubUpdate.addEventListener('click', function () { refreshSubscriptions(btnSubUpdate); });
     var btnProvidersUpdateAll = $('btn-providers-update-all');
     if (btnProvidersUpdateAll) btnProvidersUpdateAll.addEventListener('click', function () { refreshSubscriptions(btnProvidersUpdateAll); });
 
+    var srvTabs = $('srv-tabs');
+    if (srvTabs) {
+      srvTabs.addEventListener('click', function (e) {
+        var tab = e.target && e.target.closest ? e.target.closest('.gtab') : null;
+        if (!tab || !tab.dataset.group) return;
+        if (tab.dataset.group === ui.servers.group) return;
+        ui.servers.group = tab.dataset.group;
+        serversSig = null;
+        renderServers();
+        var act = srvTabs.querySelector('.gtab.active');
+        if (act && typeof act.focus === 'function') act.focus();
+      });
+      srvTabs.addEventListener('keydown', function (e) {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        var tabs = Array.prototype.slice.call(srvTabs.querySelectorAll('.gtab'));
+        var idx = tabs.indexOf(document.activeElement);
+        if (idx < 0) return;
+        e.preventDefault();
+        idx = e.key === 'ArrowRight' ? (idx + 1) % tabs.length : (idx - 1 + tabs.length) % tabs.length;
+        tabs[idx].focus();
+        tabs[idx].click();
+      });
+    }
+
     var srvSearch = $('srv-search');
     if (srvSearch) srvSearch.addEventListener('input', function () {
       ui.servers.search = srvSearch.value;
+      serversSig = null;
       renderServers();
     });
     var srvTestAll = $('btn-srv-test-all');
-    if (srvTestAll) srvTestAll.addEventListener('click', function () { runTest(allNodeNames()); });
+    if (srvTestAll) srvTestAll.addEventListener('click', function () { runTest(null); });
 
     var connSearch = $('conn-search');
     if (connSearch) connSearch.addEventListener('input', function () {
@@ -2600,16 +3399,32 @@
     var wdSave = $('btn-wd-save');
     if (wdSave) wdSave.addEventListener('click', saveWatchdog);
 
+    var updCore = $('btn-upd-core');
+    if (updCore) updCore.addEventListener('click', upgradeCore);
+    var updPanel = $('btn-upd-panel');
+    if (updPanel) updPanel.addEventListener('click', upgradePanel);
+    var updCheck = $('btn-upd-check');
+    if (updCheck) updCheck.addEventListener('click', function () {
+      setBusy(updCheck, true, 'Проверяю…');
+      loadVersions(true).then(function () {
+        setBusy(updCheck, false, 'Проверить версии');
+      }, function () {
+        setBusy(updCheck, false, 'Проверить версии');
+      });
+    });
+
     document.addEventListener('visibilitychange', function () {
       if (document.hidden) {
         stopTrafficStream();
         stopLogStream();
+        stopSysPoll();
         return;
       }
       if (!streams.traffic && !document.hidden) startTrafficStream();
       if (!ui.link.ok) pollState();
       if (ui.view === 'connections') loadConnections();
       if (ui.view === 'journal' && ui.journal.tab === 'logs') startLogStream();
+      if (ui.view === 'overview') startSysPoll();
     });
 
     window.addEventListener('online', function () { pollState(); });
