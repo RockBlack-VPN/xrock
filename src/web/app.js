@@ -24,6 +24,7 @@
     api: '',
     state: null,
     seen: false,
+    setupOpen: false,
     link: { ok: false, err: '', fails: 0, version: '', daemonOk: false, daemonVersion: '', probing: false, probedAt: 0 },
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
     conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '', sort: { key: 'time', dir: 'desc' } },
@@ -1088,6 +1089,75 @@
     if (b) b.hidden = true;
   }
 
+  /* --------------------------- экран подключения -------------------------- */
+
+  var SETUP_SKIP_KEY = 'xrock.setupSkipped';
+
+  function setupSkipped() {
+    try { return sessionStorage.getItem(SETUP_SKIP_KEY) === '1'; } catch (e) { return false; }
+  }
+
+  function setSetupStatus(text, kind) {
+    var s = $('setup-status');
+    if (!s) return;
+    s.className = 'setup-status' + (kind ? ' ' + kind : '');
+    s.textContent = text || '';
+  }
+
+  function openSetup() {
+    var box = $('setup');
+    if (!box || !box.hidden) return;
+    var input = $('setup-url');
+    if (input) input.value = readSavedApi() || defaultBase();
+    setSetupStatus('', '');
+    box.hidden = false;
+    ui.setupOpen = true;
+    if (input) {
+      setTimeout(function () { try { input.focus(); input.select(); } catch (e) {} }, 40);
+    }
+  }
+
+  function closeSetup(skip) {
+    var box = $('setup');
+    if (box) box.hidden = true;
+    ui.setupOpen = false;
+    if (skip) {
+      try { sessionStorage.setItem(SETUP_SKIP_KEY, '1'); } catch (e) {}
+    }
+  }
+
+  async function connectFromSetup() {
+    var input = $('setup-url');
+    var url = normBase(input ? input.value : '');
+    if (!url) { setSetupStatus('Укажите адрес демона', 'bad'); return; }
+    var btn = $('btn-setup-connect');
+    if (btn) btn.disabled = true;
+    setSetupStatus('проверяю связь…', '');
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, 7000);
+    try {
+      var res = await fetch(url + '/api/ping', {
+        method: 'GET', cache: 'no-store', mode: 'cors', credentials: 'omit',
+        headers: { 'Accept': 'application/json' }, signal: ctrl.signal
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      saveApi(url);
+      ui.api = url;
+      closeSetup(false);
+      try { sessionStorage.removeItem(SETUP_SKIP_KEY); } catch (e) {}
+      toast('Демон на связи' + (data && data.version ? ' · версия ' + data.version : ''), 'ok', 3200);
+      resetForApiChange();
+      pollState();
+    } catch (e) {
+      var msg = (e && e.name === 'AbortError') ? 'таймаут: демон не ответил за 7 с' : friendlyError(e);
+      setSetupStatus('Не удалось подключиться: ' + msg, 'bad');
+    } finally {
+      clearTimeout(timer);
+      if (btn) btn.disabled = false;
+    }
+  }
+
   function onLinkFail(e) {
     ui.link.fails++;
     ui.link.ok = false;
@@ -1095,9 +1165,12 @@
     renderTopbar();
     probeDaemon();
     if (ui.link.fails >= 2 || !ui.seen) renderBanner();
+    // первый вход: демон не отвечает и адрес ещё не сохранён — предлагаем подключиться
+    if (!ui.setupOpen && !ui.seen && !readSavedApi() && !setupSkipped()) openSetup();
   }
 
   function onLinkOk(version) {
+    if (ui.setupOpen) closeSetup(false);
     var wasBad = !ui.link.ok && ui.link.fails > 0;
     ui.link.ok = true;
     ui.link.err = '';
@@ -5125,6 +5198,14 @@
       setLogStatus('очищено · ' + (ui.journal.tab === 'logs' ? 'ожидание строк' : ''));
     });
 
+    var setupBtn = $('btn-setup-connect');
+    if (setupBtn) setupBtn.addEventListener('click', connectFromSetup);
+    var setupSkip = $('btn-setup-skip');
+    if (setupSkip) setupSkip.addEventListener('click', function () { closeSetup(true); });
+    var setupInput = $('setup-url');
+    if (setupInput) setupInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); connectFromSetup(); }
+    });
     var apiApply = $('btn-api-apply');
     if (apiApply) apiApply.addEventListener('click', applyApi);
     var apiReset = $('btn-api-reset');

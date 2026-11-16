@@ -514,6 +514,27 @@
       <footer class="drawer-f" id="drawer-foot"></footer>
     </aside>
   </div>
+  <!-- первый вход: адрес демона -->
+  <div class="setup" id="setup" hidden>
+    <div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setup-title">
+      <h2 id="setup-title" class="setup-title">Подключение к демону</h2>
+      <p class="hint">Укажите адрес демона xrock — обычно он на том же роутере, порт <b>9091</b>.
+        Адрес запомнится в этом браузере.</p>
+      <label class="field">
+        <span>Адрес демона</span>
+        <input class="input" id="setup-url" type="url" inputmode="url" autocomplete="off"
+               spellcheck="false" placeholder="http://192.168.2.1:9091">
+      </label>
+      <p class="hint">Секрет mihomo демон читает из <code>config.yaml</code> сам. Если секрета там нет —
+        панель тоже работает, вводить ничего не нужно.</p>
+      <div class="setup-status" id="setup-status"></div>
+      <div class="setup-actions">
+        <button type="button" class="btn primary" id="btn-setup-connect">Подключить</button>
+        <button type="button" class="btn ghost" id="btn-setup-skip">Позже</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toasts" id="toasts" aria-live="polite"></div>
   <div class="modal-root" id="modal-root" hidden></div>
 </div>
