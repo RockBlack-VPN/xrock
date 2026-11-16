@@ -27,5 +27,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            dist/xrock.tar.gz
             dist/xrock-*.tar.gz
+            dist/xrock-ui.zip
           generate_release_notes: true
