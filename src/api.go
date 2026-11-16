@@ -50,6 +50,23 @@ type providerResp struct {
 	SubscriptionInfo *apiSubInfo `json:"subscriptionInfo"`
 }
 
+type watchdogResp struct {
+	Enabled       bool          `json:"enabled"`
+	Group         string        `json:"group"`
+	IntervalSec   int           `json:"intervalSec"`
+	FailsToSwitch int           `json:"failsToSwitch"`
+	Current       string        `json:"current"`
+	CurrentOK     bool          `json:"currentOK"`
+	ManualT       int64         `json:"manualT"`
+	ManualLeft    int64         `json:"manualLeft"`
+	Dead          []string      `json:"dead"`
+	LastRound     int64         `json:"lastRound"`
+	Running       bool          `json:"running"`
+	Targets       []target      `json:"targets"`
+	LastCheck     *checkResult  `json:"lastCheck"`
+	ConsecFail    int           `json:"consecFail"`
+}
+
 type trafficResp struct {
 	Up        int64 `json:"up"`        // скорость сейчас, байт/с
 	Down      int64 `json:"down"`      // скорость сейчас, байт/с
@@ -66,6 +83,8 @@ type stateResp struct {
 	Groups    []groupResp       `json:"groups"`
 	Proxies   []proxyResp       `json:"proxies"`
 	Providers []providerResp    `json:"providers"`
+	Watchdog  watchdogResp      `json:"watchdog"`
+	Stats     map[string]*proxyStat `json:"stats"`
 	Events    []event           `json:"events"`
 	Traffic   trafficResp       `json:"traffic"`
 	Started   int64             `json:"started"`
@@ -99,6 +118,7 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 
 	a.mu.Lock()
 	resp.Mihomo = map[string]any{"version": a.mihomoVer, "api": a.cl.baseURL(), "secret": a.cl.authSecret() != ""}
+	resp.Stats = a.st.Stats
 	resp.Events = append([]event{}, a.st.Events...)
 	if len(resp.Events) > 80 {
 		resp.Events = resp.Events[len(resp.Events)-80:]
@@ -152,11 +172,73 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.mu.Lock()
+	s := a.st.Watch
+	effGroup := a.curGroup
+	if effGroup == "" {
+		effGroup = s.Group
+	}
+	resp.Watchdog = watchdogResp{
+		Enabled: s.Enabled, Group: effGroup, IntervalSec: s.IntervalSec, FailsToSwitch: s.FailsToSwitch,
+		Current: a.curName, CurrentOK: a.curOK, LastRound: a.lastRound, Running: a.running,
+		Targets: s.Targets, LastCheck: a.lastCheck, ConsecFail: a.consecFail,
+		ManualT: a.st.SelectedT[effGroup],
+	}
 	resp.Traffic = trafficResp{Up: a.traffic.Up, Down: a.traffic.Down, UpTotal: a.traffic.UpTotal, DownTotal: a.traffic.DownTotal, Conns: a.traffic.Conns}
 	a.mu.Unlock()
+	if grace, left := a.manualGrace(effGroup); grace {
+		resp.Watchdog.ManualLeft = left
+		_ = grace
+	}
+	resp.Watchdog.Dead = a.deadList()
+	if resp.Watchdog.Dead == nil {
+		resp.Watchdog.Dead = []string{}
+	}
 	writeJSON(w, resp)
 }
 
+func (a *app) handleWatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+	var req struct {
+		Enabled       *bool    `json:"enabled"`
+		Group         *string  `json:"group"`
+		IntervalSec   *int     `json:"intervalSec"`
+		FailsToSwitch *int     `json:"failsToSwitch"`
+		Targets       *[]target `json:"targets"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		fail(w, 400, "bad request")
+		return
+	}
+	a.mu.Lock()
+	if req.Enabled != nil {
+		a.st.Watch.Enabled = *req.Enabled
+	}
+	if req.Group != nil {
+		a.st.Watch.Group = strings.TrimSpace(*req.Group)
+	}
+	if req.IntervalSec != nil {
+		a.st.Watch.IntervalSec = *req.IntervalSec
+	}
+	if req.FailsToSwitch != nil {
+		a.st.Watch.FailsToSwitch = *req.FailsToSwitch
+	}
+	if req.Targets != nil {
+		a.st.Watch.Targets = *req.Targets
+	}
+	a.st.Watch.normalize()
+	en := a.st.Watch.Enabled
+	a.mu.Unlock()
+	a.save()
+	a.addEvent("info", "", eventText(en))
+	select {
+	case a.kick <- struct{}{}:
+	default:
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
 
 func eventText(enabled bool) string {
 	if enabled {
@@ -179,50 +261,23 @@ func (a *app) handleSelect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
+	a.curGroup = req.Group
+	a.curName = req.Name
+	a.curOK = true
+	a.consecFail = 0
 	if a.st.Selected == nil {
 		a.st.Selected = map[string]string{}
 	}
 	a.st.Selected[req.Group] = req.Name
+	if a.st.SelectedT == nil {
+		a.st.SelectedT = map[string]int64{}
+	}
+	a.st.SelectedT[req.Group] = time.Now().Unix()
 	a.mu.Unlock()
 	a.save()
+	a.clearDead(req.Name)
 	a.addEvent("info", req.Group, "вручную выбран "+req.Name)
 	writeJSON(w, map[string]any{"ok": true})
-}
-
-// nodeDelay — проксированный замер узла: для узлов подписки идём в
-// /providers/proxies/{provider}/{node}/healthcheck (в /proxies их нет),
-// для групп/служебных — обычный /proxies/{name}/delay.
-func (a *app) nodeDelay(proxies map[string]*proxyItem, name, url string, timeoutMS int) (int, error) {
-	if p := proxies[name]; p != nil && p.Provider != "" && !p.isGroup() {
-		return a.cl.providerNodeDelay(p.Provider, name, url, timeoutMS)
-	}
-	return a.cl.delay(name, url, timeoutMS)
-}
-
-// pickGroup — какую группу мерить целиком: PROXY, иначе первую Selector.
-func pickGroup(proxies map[string]*proxyItem) string {
-	if p := proxies["PROXY"]; p != nil && p.isGroup() {
-		return "PROXY"
-	}
-	var names []string
-	for n, p := range proxies {
-		if p.isGroup() && strings.EqualFold(p.Type, "selector") {
-			names = append(names, n)
-		}
-	}
-	sort.Strings(names)
-	if len(names) > 0 {
-		return names[0]
-	}
-	return ""
-}
-
-func shortErr(err error) string {
-	s := err.Error()
-	if len(s) > 80 {
-		s = s[:80]
-	}
-	return s
 }
 
 // handleTest — проксированный замер задержки (mihomo делает запрос через узел),
@@ -250,7 +305,10 @@ func (a *app) handleTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(req.Names) == 0 {
-		gname := pickGroup(proxies)
+		a.mu.Lock()
+		want := a.st.Watch.Group
+		a.mu.Unlock()
+		gname := watchGroup(proxies, want)
 		if gname != "" {
 			if m, err := a.cl.groupDelay(gname, target, 4000); err == nil {
 				for name, p := range proxies {
@@ -259,8 +317,10 @@ func (a *app) handleTest(w http.ResponseWriter, r *http.Request) {
 					}
 					if ms, ok := m[name]; ok && ms > 0 {
 						out[name] = res{Delay: ms}
+						a.addStatQuick(name, ms, true)
 					} else {
 						out[name] = res{Err: "нет ответа"}
+						a.addStatQuick(name, 0, false)
 					}
 				}
 				writeJSON(w, map[string]any{"results": out, "via": "group " + gname})
@@ -292,12 +352,41 @@ func (a *app) handleTest(w http.ResponseWriter, r *http.Request) {
 				out[name] = res{Delay: ms}
 			}
 			mu.Unlock()
+			a.addStatQuick(name, ms, err == nil)
 		}(name)
 	}
 	wg.Wait()
 	writeJSON(w, map[string]any{"results": out, "via": "по одному"})
 }
 
+// addStatQuick — обновление статистики после одиночного замера.
+func (a *app) addStatQuick(name string, ms int, ok bool) {
+	now := time.Now().Unix()
+	a.mu.Lock()
+	st := a.st.Stats[name]
+	if st == nil {
+		st = &proxyStat{}
+		a.st.Stats[name] = st
+	}
+	st.Delay = ms
+	st.OK = ok
+	st.LastT = now
+	if ok {
+		st.Fails = 0
+		if st.OkSince == 0 {
+			st.OkSince = now
+		}
+	} else {
+		st.Fails++
+		st.OkSince = 0
+	}
+	st.History = append(st.History, histPoint{T: now, MS: ms, Fail: !ok})
+	if len(st.History) > statHistMax {
+		st.History = st.History[len(st.History)-statHistMax:]
+	}
+	a.mu.Unlock()
+	a.save()
+}
 
 func (a *app) handleProviderUpdate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -489,6 +578,7 @@ func (a *app) routes(embedded fs.FS) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/ping", a.handlePing)
 	mux.HandleFunc("/api/state", a.handleState)
+	mux.HandleFunc("/api/watch", a.handleWatch)
 	mux.HandleFunc("/api/select", a.handleSelect)
 	mux.HandleFunc("/api/test", a.handleTest)
 	mux.HandleFunc("/api/providers/update", a.handleProviderUpdate)
@@ -502,10 +592,6 @@ func (a *app) routes(embedded fs.FS) http.Handler {
 	mux.HandleFunc("/api/rules", a.handleRules)
 	mux.HandleFunc("/api/stream/traffic", a.handleStreamTraffic)
 	mux.HandleFunc("/api/stream/logs", a.handleStreamLogs)
-	// неизвестный /api/* — это не SPA-страница, а ошибка
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		fail(w, http.StatusNotFound, "неизвестный метод API: "+r.URL.Path)
-	})
 	mux.Handle("/", a.uiHandler(embedded))
 	return cors(mux)
 }

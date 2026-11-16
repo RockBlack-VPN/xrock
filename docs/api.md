@@ -30,6 +30,22 @@ UI (статика, отдаётся mihomo по `/ui`) обращается к 
                             "total": 0, "expire": 1888617600 },
       "testUrl": "http://www.gstatic.com/generate_204", "interval": 300 }
   ],
+  "watchdog": {
+    "enabled": true, "group": "PROXY", "intervalSec": 10, "failsToSwitch": 2,
+    "current": "🇩🇪 Germany-31s(xHTTP)", "currentOK": true,
+    "manualT": 1794736300, "manualLeft": 420,
+    "dead": ["🇹🇷 Türkiye-2s(xHTTP)"],
+    "lastRound": 1794736343, "running": true,
+    "targets": [ { "name": "YouTube", "url": "https://www.youtube.com/generate_204" } ],
+    "lastCheck": { "name": "🇩🇪 Germany-31s(xHTTP)", "t": 1794736343,
+                   "results": [ { "target": "YouTube", "ok": true, "ms": 111 },
+                                { "target": "Telegram", "ok": false, "ms": 0, "err": "timeout" } ] }
+  },
+  "stats": {
+    "🇩🇪 Germany-31s(xHTTP)": { "delay": 111, "ok": true, "fails": 0,
+      "lastT": 1794736343, "okSince": 1794736200,
+      "history": [ { "t": 1794736343, "ms": 111, "fail": false } ] }
+  },
   "events": [ { "t": 1794736343, "kind": "warn", "group": "PROXY", "text": "..." } ],
   "traffic": { "up": 1234567, "down": 7654321, "conns": 42 }
 }
@@ -37,13 +53,14 @@ UI (статика, отдаётся mihomo по `/ui`) обращается к 
 
 `kind` события: `info` | `warn` | `bad` | `ok`.
 
-Сторожа (автопереключения группы по расписанию) в демоне нет: он только отдаёт состояние
-и выполняет явные команды из панели (`/api/select`, `/api/test`).
+`manualT` — когда узел группы выбрали вручную, `manualLeft` — сколько секунд сторож после
+этого не переключает группу сам (10 минут).
 
 ## Действия
 
 | Метод и путь | Тело | Что делает |
 |---|---|---|
+| `POST /api/watch` | `{ "enabled": true, "group": "PROXY", "intervalSec": 10, "failsToSwitch": 2, "targets": [{"name":"YouTube","url":"..."}] }` | меняет настройки сторожа (любое поле опционально) |
 | `POST /api/select` | `{ "group": "PROXY", "name": "🇩🇪 Germany-31s(xHTTP)" }` | переключает группу через Clash API |
 | `POST /api/test` | `{ "names": ["..."], "url": "https://www.youtube.com/generate_204" }` | **проксированный** замер задержки (Clash API `/proxies/{name}/delay`); если `names` пусто — все узлы групп. Ответ: `{ "results": { "имя": { "delay": 111, "err": "" } } }` |
 | `POST /api/speedtest` | `{ "name": "..." }` | (0.2) скорость через прокси, пока не реализовано — 501 |

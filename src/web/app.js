@@ -28,9 +28,9 @@
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
     conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '', sort: { key: 'time', dir: 'desc' } },
     rules: { list: [], search: '', at: 0, loading: false, err: '' },
-    journal: { tab: 'events', logLevel: 'info', logs: [], autoscroll: true, es: null },
+    journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
     servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
-    settings: { inited: false },
+    settings: { dirty: false, targetsDirty: false, inited: false },
     sys: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
     sub: { at: 0, loading: false, err: '', data: null, edit: '' },
     ver: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
@@ -52,6 +52,8 @@
   var timers = { poll: null, conns: null, sys: null };
   var streams = { traffic: null, logs: null, logLevel: '' };
   var pollPromise = null;
+  var wdTargetsSig = '';
+  var wdGroupsSig = '';
   var delayRev = 0;
   var serversSig = null;
   var rulesSig = '';
@@ -1179,8 +1181,14 @@
     s.proxies = Array.isArray(s.proxies) ? s.proxies : [];
     s.providers = Array.isArray(s.providers) ? s.providers : [];
     s.events = Array.isArray(s.events) ? s.events : [];
+    s.watchdog = s.watchdog && typeof s.watchdog === 'object' ? s.watchdog : {};
+    s.watchdog.dead = Array.isArray(s.watchdog.dead) ? s.watchdog.dead : [];
+    s.watchdog.targets = Array.isArray(s.watchdog.targets) ? s.watchdog.targets : [];
     s.stats = s.stats && typeof s.stats === 'object' ? s.stats : {};
     s.traffic = s.traffic && typeof s.traffic === 'object' ? s.traffic : {};
+    if (s.watchdog.lastCheck && !Array.isArray(s.watchdog.lastCheck.results)) {
+      s.watchdog.lastCheck.results = [];
+    }
     return s;
   }
 
@@ -1260,6 +1268,9 @@
         if (st.providers[i] && st.providers[i].testUrl) return st.providers[i].testUrl;
       }
     }
+    if (st && st.watchdog && st.watchdog.targets && st.watchdog.targets[0] && st.watchdog.targets[0].url) {
+      return st.watchdog.targets[0].url;
+    }
     return 'http://www.gstatic.com/generate_204';
   }
 
@@ -1291,6 +1302,7 @@
     renderActive();
     maybeAutoTest();
     if (ui.view === 'overview') maybeTestTop();
+    if (ui.view === 'settings') fillWatchdogForm();
     if (!streams.traffic && !document.hidden) startTrafficStream();
     if (ui.view === 'overview') maybeLoadConnCount();
   }
@@ -1661,7 +1673,7 @@
     if (view !== 'overview') stopSysPoll();
 
     if (view === 'overview') {
-      maybeTestTop();
+      maybeTestCurrent();
       renderOverview();
       startSysPoll();
     } else if (view === 'servers') {
@@ -1684,11 +1696,26 @@
       else stopLogStream();
     } else if (view === 'settings') {
       initSettings();
+      fillWatchdogForm();
       renderUpdates();
       loadVersions();
     }
 
     if (prev === 'journal' && view !== 'journal') stopLogStream();
+  }
+
+  function maybeTestCurrent() {
+    if (!ui.state) return;
+    var wd = ui.state.watchdog || {};
+    var current = wd.current || (ui.state.groups[0] && ui.state.groups[0].now) || '';
+    current = finalNode(current);
+    if (!current) return;
+    var tested = delay.map[current];
+    if (tested && !tested.err) return;
+    if (delay.testing[current]) return;
+    if (Date.now() - delay.lastAuto < 20000) return;
+    delay.lastAuto = Date.now();
+    runTest([current], { silent: true });
   }
 
   /* ------------------------------- рендер -------------------------------- */
@@ -1701,6 +1728,7 @@
     else if (ui.view === 'subscription') renderSubscription();
     else if (ui.view === 'journal') renderJournal();
     else if (ui.view === 'settings') {
+      fillWatchdogForm();
       renderSettingsStatus();
     }
   }
@@ -1760,6 +1788,11 @@
 
   /* ------------------------------- ОБЗОР -------------------------------- */
 
+  function isDeadNode(name) {
+    var wd = ui.state && ui.state.watchdog;
+    return !!(wd && wd.dead && wd.dead.indexOf(name) >= 0);
+  }
+
   function setBadge(node, cls, text) {
     if (!node) return;
     node.className = 'badge ' + (cls || '');
@@ -1771,12 +1804,14 @@
     if (!st) {
       skeletonCard($('cur-body'), 4);
       skeletonCard($('top-body'), 3);
+      skeletonCard($('wd-body'), 4);
       skeletonCard($('speed-body'), 3);
       skeletonCard($('router-body'), 3);
       skeletonCard($('sub-body'), 3);
       skeletonCard($('conn-card-body'), 2);
       setBadge($('cur-badge'), 'muted', 'загрузка');
       setBadge($('top-badge'), 'muted', '—');
+      setBadge($('wd-badge-overview'), 'muted', '—');
       setBadge($('router-badge'), 'muted', 'загрузка');
       setBadge($('sub-badge'), 'muted', '—');
       setBadge($('conn-badge'), 'muted', '—');
@@ -1785,6 +1820,7 @@
     }
     renderCurrentCard(st);
     renderTopCard();
+    renderWatchdogCard(st);
     renderSpeedCard();
     renderRouterCard();
     renderSubCard(st);
@@ -1809,66 +1845,6 @@
     if (!g) return '';
     var chain = activeChain(g.name);
     return chain.length ? chain[chain.length - 1].name : '';
-  }
-
-  function renderCurrentCard(st) {
-    var body = $('cur-body');
-    if (!body) return;
-    clear(body);
-    if (!st) { skeletonCard(body, 4); return; }
-
-    var group = currentGroup();
-    var groupName = group ? group.name : '';
-    var chain = groupName ? activeChain(groupName) : [];
-    var cur = chain.length ? chain[chain.length - 1].name : '';
-
-    if (!cur) {
-      body.appendChild(el('div', { class: 'empty', text: 'Демон не сообщил активный сервер. Проверьте связь с демоном в настройках.' }));
-      setBadge($('cur-badge'), 'muted', 'нет данных');
-      return;
-    }
-
-    var tested = delay.map[cur];
-    var ms = tested && !tested.err ? tested.delay : 0;
-    var healthText = tested ? (tested.err ? 'не отвечает' : 'жив') : 'нет данных';
-    var healthCls = tested ? (tested.err ? 'bad' : 'ok') : 'muted';
-    setBadge($('cur-badge'), healthCls, healthText);
-
-    body.appendChild(el('div', { class: 'cur-name' }, [
-      nodeBadge(cur, 'lg'),
-      el('span', { text: nodeLabel(cur) }),
-      group ? el('span', { class: 'badge muted', text: group.type || 'группа' }) : null
-    ]));
-
-    var chainText = chain.map(function (x) { return nodeLabel(x.name); }).join(' → ');
-    body.appendChild(el('div', { class: 'cur-group' }, [
-      'Группа ',
-      el('b', { text: groupName || '—' }),
-      chainText && chainText !== groupName ? ' · ' + chainText : ''
-    ]));
-
-    var proxy = proxyByName(cur);
-    var nodes = group ? groupNodeCount(group) : 0;
-    body.appendChild(el('div', { class: 'cur-metrics' }, [
-      metric('задержка через прокси', ms > 0 ? fmtDelay(ms) : '—', ms > 0 ? delayClass(ms) : 'dim',
-        'Проксированный замер Clash API: mihomo сам делает запрос через узел'),
-      metric('последний замер', tested ? (tested.err ? 'ошибка' : 'жив') : '—',
-        tested && tested.err ? 'bad' : tested ? 'good' : 'dim',
-        tested ? 'Замер ' + fmtAgo(tested.t) : 'Ещё не мерили'),
-      metric('узлов в группе', nodes ? String(nodes) : '—', 'dim'),
-      metric('протокол', proxy ? (proxy.type + (proxy.udp ? ' · UDP' : '')) : '—', 'dim')
-    ]));
-
-    body.appendChild(el('div', { class: 'row' }, [
-      el('button', {
-        type: 'button', class: 'btn small ghost',
-        onclick: function () { runTest([cur]); }
-      }, 'Проверить задержку'),
-      el('button', {
-        type: 'button', class: 'btn small ghost',
-        onclick: function () { activate('servers'); }
-      }, 'Все серверы')
-    ]));
   }
 
   /* ------------------------------ топ прокси ------------------------------ */
@@ -1922,7 +1898,7 @@
     var list = el('ol', { class: 'top-list' });
     tc.alive.slice(0, 8).forEach(function (x, i) {
       var isCur = x.name === cur;
-      var row = el('li', {
+      list.appendChild(el('li', {
         class: 'top-row' + (isCur ? ' current' : ''),
         title: x.name + ' · ' + nodeTypeText(x.name) + (x.d.t ? '\nзамер ' + fmtAgo(x.d.t) : '')
       }, [
@@ -1936,8 +1912,7 @@
             type: 'button', class: 'btn small ghost top-pick', text: 'Выбрать',
             onclick: function (e) { if (e) e.stopPropagation(); chooseNode(x.name, tc.group); }
           }) : null)
-      ]);
-      list.appendChild(row);
+      ]));
     });
     body.appendChild(list);
 
@@ -1947,17 +1922,198 @@
     if (tail.length) body.appendChild(el('div', { class: 'hint', text: tail.join(' · ') }));
   }
 
-  // Автозамер группы при открытии «Обзора», если цифр ещё нет.
+  // Автозамер группы при открытии «Обзора», если рейтинг ещё не из чего строить.
   function maybeTestTop() {
     if (ui.view !== 'overview') return;
     if (delay.running || Object.keys(delay.testing).length) return;
     var g = currentGroup();
-    if (!g) return;
-    var any = (g.all || []).some(function (n) { return delay.map[n]; });
-    if (any) return;
+    if (!g) { maybeTestCurrent(); return; }
+    var tc = topCandidates();
+    var need = Math.min(4, tc.total);
+    if (tc.tested >= need) return;
     if (Date.now() - delay.lastAuto < 20000) return;
     delay.lastAuto = Date.now();
     runTest(null, { silent: true });
+  }
+
+  /* --------------------------- выключатель сторожа ------------------------- */
+
+  function renderWdSwitch(on) {
+    var title = $('wd-switch-title'), hint = $('wd-switch-hint');
+    var btn = $('btn-wd-toggle'), dot = $('wd-switch-dot');
+    if (title) title.textContent = on ? 'Сторож включён' : 'Сторож выключен';
+    if (hint) hint.textContent = on
+      ? 'проверяет активный сервер каждые ' + (num(ui.state && ui.state.watchdog && ui.state.watchdog.intervalSec) || 10) + ' с и переключает при сбоях'
+      : 'автопереключений нет — сервер выбирается вручную';
+    if (dot) dot.className = 'wd-switch-dot' + (on ? ' on' : '');
+    if (btn) {
+      btn.textContent = on ? 'Выключить сторожа' : 'Включить сторожа';
+      btn.className = 'btn ' + (on ? 'danger' : 'primary');
+      btn.dataset.on = on ? '1' : '0';
+    }
+    var quick = $('wd-quick-toggle');
+    if (quick) {
+      quick.textContent = on ? 'Выключить' : 'Включить';
+      quick.className = 'btn small ' + (on ? 'ghost' : 'primary');
+    }
+  }
+
+  async function setWatchdogEnabled(on) {
+    var btn = $('btn-wd-toggle');
+    var quick = $('wd-quick-toggle');
+    if (btn) btn.disabled = true;
+    if (quick) quick.disabled = true;
+    try {
+      await postJson('/api/watch', { enabled: !!on }, 15000);
+      ui.settings.dirty = false;
+      toast(on ? 'Сторож включён' : 'Сторож выключен — сервер больше не переключается сам', 'ok', 3600);
+      await pollState();
+      fillWatchdogForm(true);
+    } catch (e) {
+      toast('Не удалось переключить сторожа: ' + friendlyError(e), 'bad');
+    } finally {
+      if (btn) btn.disabled = false;
+      if (quick) quick.disabled = false;
+      renderWdSwitch(!!(ui.state && ui.state.watchdog && ui.state.watchdog.enabled));
+    }
+  }
+
+  function renderCurrentCard(st) {
+    var body = $('cur-body');
+    if (!body) return;
+    clear(body);
+
+    var wd = st.watchdog || {};
+    var groupName = wd.group || (st.groups[0] && st.groups[0].name) || '';
+    var group = groupName ? groupByName(groupName) : null;
+    var chain = groupName ? activeChain(groupName) : [];
+    var chainFinal = chain.length ? chain[chain.length - 1].name : '';
+    var wdNode = wd.current ? finalNode(wd.current) : '';
+    // активная цепочка важнее: после ручного переключения именно она отражает реальность
+    var cur = chainFinal || wdNode;
+
+    if (!cur) {
+      body.appendChild(el('div', { class: 'empty', text: 'Демон не сообщил активный сервер. Проверьте связь и настройки сторожа.' }));
+      setBadge($('cur-badge'), 'muted', 'нет данных');
+      return;
+    }
+
+    var stat = st.stats && st.stats[cur] ? st.stats[cur] : null;
+    var tested = delay.map[cur];
+    // Задержку показываем только после /api/test — никаких цифр из чужих источников.
+    var ms = tested && !tested.err ? tested.delay : 0;
+
+    var healthText, healthCls;
+    if (stat) {
+      if (stat.ok === true) { healthText = 'здоров'; healthCls = 'ok'; }
+      else if (stat.ok === false) { healthText = 'сбои' + (num(stat.fails) ? ': ' + num(stat.fails) : ''); healthCls = 'bad'; }
+      else { healthText = 'нет данных'; healthCls = 'muted'; }
+    } else if (tested) {
+      healthText = tested.err ? 'не отвечает' : 'жив';
+      healthCls = tested.err ? 'bad' : 'ok';
+    } else {
+      healthText = 'нет данных';
+      healthCls = 'muted';
+    }
+    setBadge($('cur-badge'), healthCls, healthText);
+
+    var title = el('div', { class: 'cur-name' }, [
+      nodeBadge(cur, 'lg'),
+      el('span', { text: nodeLabel(cur) }),
+      group ? el('span', { class: 'badge muted', text: group.type || 'группа' }) : null
+    ]);
+    body.appendChild(title);
+
+    var chainText = chain.map(function (x) { return nodeLabel(x.name); }).join(' → ');
+    if (groupName) {
+      body.appendChild(el('div', { class: 'cur-group' }, [
+        'Группа ',
+        el('b', { text: groupName }),
+        chainText && chainText !== groupName ? ' · ' + chainText : '',
+        wdNode && wdNode !== cur ? ' · сторож считает активным: ' + nodeLabel(wdNode) : ''
+      ]));
+    } else {
+      body.appendChild(el('div', { class: 'cur-group', text: 'Группа не определена — сторож ещё не запускался.' }));
+    }
+
+    var nowSec = Math.floor(Date.now() / 1000);
+    var lastCheck = wd.lastCheck;
+    var targets = (lastCheck && lastCheck.results) || [];
+    var okCount = targets.filter(function (r) { return r && r.ok; }).length;
+
+    var metrics = el('div', { class: 'cur-metrics' }, [
+      metric('задержка через прокси', ms > 0 ? fmtDelay(ms) : '—', ms > 0 ? delayClass(ms) : 'dim',
+        'Проксированный замер Clash API, не TCP-пинг роутера'),
+      metric('состояние', healthText, healthCls === 'ok' ? 'good' : healthCls === 'bad' ? 'bad' : 'dim'),
+      metric('цели проверки', targets.length ? okCount + '/' + targets.length : '—', targets.length && okCount === targets.length ? 'good' : targets.length ? 'warn' : 'dim'),
+      metric('стабилен', stat && stat.okSince ? fmtDur(nowSec - num(stat.okSince)) : '—', 'dim')
+    ]);
+    body.appendChild(metrics);
+
+    if (targets.length) {
+      if (lastCheck && lastCheck.name && lastCheck.name !== cur) {
+        body.appendChild(el('div', { class: 'hint', text: 'Последняя проверка целей относится к узлу ' + nodeLabel(lastCheck.name) }));
+      }
+      var list = el('div', { class: 'cur-targets' });
+      targets.forEach(function (r) {
+        if (!r) return;
+        var ok = !!r.ok;
+        var val = ok ? (num(r.ms) > 0 ? fmtDelay(r.ms) : 'ok') : (r.err ? trim(r.err, 28) : 'сбой');
+        list.appendChild(el('div', { class: 'tchk', title: (r.target || '') + (r.err ? ' — ' + r.err : '') }, [
+          el('span', { class: ok ? 'dot-ok' : 'dot-bad' }),
+          icoEl(targetIconName(r.target), 'sm'),
+          el('span', { class: 'tname', text: r.target || 'цель' }),
+          el('span', { class: 'tval ' + (ok ? 'good' : 'bad'), text: val })
+        ]));
+      });
+      body.appendChild(list);
+    }
+
+    body.appendChild(el('div', { class: 'row' }, [
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        onclick: function () { runTest([cur]); }
+      }, 'Проверить задержку'),
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        onclick: function () { activate('servers'); }
+      }, 'Все серверы')
+    ]));
+  }
+
+  function renderWatchdogCard(st) {
+    var body = $('wd-body');
+    if (!body) return;
+    clear(body);
+    var wd = st.watchdog || {};
+    renderWdSwitch(!!wd.enabled);
+    var badge = $('wd-badge-overview');
+    if (!wd.enabled) setBadge(badge, 'muted', 'выключен');
+    else if (wd.currentOK === false) setBadge(badge, 'bad', 'сбои');
+    else setBadge(badge, 'ok', 'включён');
+
+    var nowSec = Math.floor(Date.now() / 1000);
+    var lastT = wd.lastCheck ? wd.lastCheck.t : wd.lastRound;
+    var rows = el('div', { class: 'kv' }, [
+      kvRow('Группа', wd.group || '—'),
+      kvRow('Интервал', (wd.intervalSec ? wd.intervalSec + ' с' : '—')),
+      kvRow('Сбоев до переключения', wd.failsToSwitch ? String(wd.failsToSwitch) : '—'),
+      kvRow('Последняя проверка', lastT ? fmtAgo(lastT) : '—', lastT ? fmtTime(lastT) : ''),
+      kvRow('Поток', wd.running ? 'идёт проверка' : (wd.enabled ? 'ожидание' : 'остановлен')),
+      kvRow('Мёртвых узлов', String((wd.dead || []).length))
+    ]);
+    body.appendChild(rows);
+
+    if (num(wd.manualLeft) > 0) {
+      body.appendChild(el('div', { class: 'hint' },
+        'Вы выбрали сервер вручную — сторож не переключит его ещё ' + Math.ceil(num(wd.manualLeft) / 60) + ' мин.'));
+    }
+    if (lastT && (nowSec - num(lastT)) > Math.max(90, num(wd.intervalSec) * 6)) {
+      body.appendChild(el('div', { class: 'hint' }, 'Последняя проверка была давно — возможно, сторож не работает.'));
+    }
+    if (!wd.enabled) {
+      body.appendChild(el('div', { class: 'hint' }, 'Сторож выключен: автопереключения не выполняются.'));
+    }
   }
 
   function renderSpeedCard() {
@@ -2266,6 +2422,7 @@
   function nodeRank(name) {
     var d = delay.map[name];
     if (d && !d.err) return 0;
+    if (isDeadNode(name)) return 2;
     if (d && d.err) return 2;
     return 1;
   }
@@ -2294,7 +2451,7 @@
     return n;
   }
 
-  // Выбранная группа: запомненная → PROXY/первая Selector → первая.
+  // Выбранная группа: запомненная → watchdog.group → первая Selector → первая.
   function serverGroup() {
     var st = ui.state;
     if (!st) return null;
@@ -2302,19 +2459,25 @@
     if (!groups.length) { ui.servers.group = ''; return null; }
     var saved = ui.servers.group ? groupByName(ui.servers.group) : null;
     if (saved) return saved;
-    var pick = currentGroup();
+    var wdName = (st.watchdog && st.watchdog.group) || '';
+    var pick = wdName ? groupByName(wdName) : null;
+    if (!pick) {
+      for (var i = 0; i < groups.length; i++) {
+        if (isSelector(groups[i])) { pick = groups[i]; break; }
+      }
+    }
     if (!pick) pick = groups[0];
     ui.servers.group = pick.name;
     return pick;
   }
 
-  // «Плохой» узел — тот, чей последний проксированный замер вернул ошибку.
   function isDeadOrErr(name) {
+    if (isDeadNode(name)) return true;
     var d = delay.map[name];
     if (d && d.err) return true;
     if (isGroupName(name)) {
       var f = finalNode(name);
-      if (f && f !== name && delay.map[f] && delay.map[f].err) return true;
+      if (f && f !== name && (isDeadNode(f) || (delay.map[f] && delay.map[f].err))) return true;
     }
     return false;
   }
@@ -2329,6 +2492,8 @@
       var all = gi.all || [];
       parts.push([gi.name || '', gi.now || '', all.length, all[0] || '', all[all.length - 1] || ''].join('|'));
     }
+    var wd = st.watchdog || {};
+    parts.push('dead:' + (wd.dead || []).join('\u0001'));
     for (var j = 0; j < st.providers.length; j++) parts.push('p:' + (st.providers[j].updatedAt || ''));
     return parts.join('\u0002');
   }
@@ -2457,6 +2622,7 @@
 
     renderGroupTabs(st);
     clear(grid);
+    renderDeadCard();
 
     if (!st) {
       if (emptyEl) {
@@ -2506,7 +2672,7 @@
     if (dead.length) {
       grid.appendChild(el('div', { class: 'node-grid-sep' }, [
         el('span', { class: 'badge bad', text: 'не отвечают' }),
-        el('span', { class: 'hint', text: 'по последнему проксированному замеру' })
+        el('span', { class: 'hint', text: 'по данным сторожа или последнего замера' })
       ]));
       dead.forEach(function (r) { grid.appendChild(buildNodeCard(r.name, group)); });
     }
@@ -2579,7 +2745,7 @@
     var meta = el('span', { class: 'ncard-meta' }, [
       el('span', { class: 'ncard-type', text: isSub ? 'группа · ' + nodeTypeText(name) : nodeTypeText(name) }),
       !isSub && proxy && proxy.udp ? el('span', { class: 'ncard-udp', text: 'UDP' }) : null,
-      dead ? el('span', { class: 'badge bad', text: 'не отвечает' }) : null
+      dead ? el('span', { class: 'badge bad', text: 'мёртв' }) : null
     ]);
     if (isSub && target && target !== name) {
       meta.appendChild(el('span', {
@@ -2709,6 +2875,25 @@
       if (ui.view === 'servers') renderServers();
       else if (ui.view === 'overview') renderOverview();
     }
+  }
+
+  function renderDeadCard() {
+    var wrap = $('srv-dead-wrap');
+    var list = $('srv-dead');
+    var cnt = $('srv-dead-count');
+    if (!wrap || !list) return;
+    var wd = ui.state && ui.state.watchdog;
+    var dead = (wd && wd.dead) || [];
+    if (!dead.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    if (cnt) { cnt.className = 'badge bad'; cnt.textContent = String(dead.length); }
+    clear(list);
+    dead.forEach(function (name) {
+      list.appendChild(el('span', {
+        class: 'dead-item',
+        title: 'Мёртв по данным сторожа: ' + name
+      }, [flagForNode(name, 'sm'), el('span', { text: nodeLabel(name) })]));
+    });
   }
 
   /* ------------------------------ СОЕДИНЕНИЯ ----------------------------- */
@@ -4000,6 +4185,17 @@
     }
   }
 
+  function matchEvent(ev, filter) {
+    var kind = String(ev.kind || '').toLowerCase();
+    var text = String(ev.text || '');
+    if (filter === 'fail') {
+      return kind === 'bad' || kind === 'warn' || /сбо|ошиб|недоступ|не отвеч|dead|fail|timeout|таймаут/i.test(text);
+    }    if (filter === 'switch') {
+      return /переключ|выбран|выбира|select|switch|лучш|fallback/i.test(text + ' ' + kind);
+    }
+    return true;
+  }
+
   function renderEvents() {
     var box = $('ev-list');
     if (!box) return;
@@ -4007,7 +4203,7 @@
     var allEvents = st && Array.isArray(st.events) ? st.events : [];
     var firstT = allEvents.length ? num(allEvents[0] && allEvents[0].t) : 0;
     var lastT = allEvents.length ? num(allEvents[allEvents.length - 1] && allEvents[allEvents.length - 1].t) : 0;
-    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + (st ? 1 : 0) +
+    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + ui.journal.filter + '|' + (st ? 1 : 0) +
       '|' + (ui.drawer.open && ui.drawer.kind === 'event' ? ui.drawer.key : '');
     if (sig === eventsSig && box.childNodes.length) return;
     eventsSig = sig;
@@ -4015,8 +4211,11 @@
     var keepScroll = box.scrollTop;
     var events = allEvents.slice();
     events.sort(function (a, b) { return num(b && b.t) - num(a && a.t); });
+    var filter = ui.journal.filter;
+    var filtered = events.filter(function (ev) { return ev && matchEvent(ev, filter); });
+
     clear(box);
-    events.slice(0, 300).forEach(function (ev) {
+    filtered.slice(0, 300).forEach(function (ev) {
       var kind = String(ev.kind || 'info').toLowerCase();
       if (['info', 'warn', 'bad', 'ok'].indexOf(kind) < 0) kind = 'info';
       var key = num(ev.t) + '|' + String(ev.text || '');
@@ -4048,12 +4247,20 @@
 
     var emptyEl = $('ev-empty');
     if (emptyEl) {
-      emptyEl.hidden = events.length > 0;
+      emptyEl.hidden = filtered.length > 0;
       if (!st) emptyEl.textContent = 'Нет данных: демон недоступен.';
-      else emptyEl.textContent = 'Событий пока нет. Здесь появляются переключения узлов, обновления конфига и ошибки связи с mihomo.';
+      else if (!events.length) emptyEl.textContent = 'Событий пока нет.';
+      else if (!filtered.length) emptyEl.textContent = 'Событий с таким фильтром нет.';
     }
     var cnt = $('ev-count');
-    if (cnt) cnt.textContent = events.length ? String(events.length) : '';
+    if (cnt) cnt.textContent = events.length ? (filter === 'all' ? String(filtered.length) : filtered.length + ' из ' + events.length) : '';
+
+    var filters = $('ev-filters');
+    if (filters) {
+      Array.prototype.forEach.call(filters.querySelectorAll('[data-filter]'), function (b) {
+        b.classList.toggle('active', b.dataset.filter === filter);
+      });
+    }
   }
 
   function renderLogsList() {
@@ -4407,6 +4614,8 @@
     renderThemeCards();
     renderThemeBadge();
     renderSettingsStatus();
+    fillGroupSelect();
+    fillWatchdogForm();
   }
 
   function renderSettingsStatus() {
@@ -4414,6 +4623,162 @@
     if (status) {
       var saved = readSavedApi();
       status.textContent = 'Сейчас используется: ' + ui.api + (saved ? ' · сохранено в localStorage' : ' · по умолчанию');
+    }
+    var badge = $('wd-badge-settings');
+    var wd = ui.state && ui.state.watchdog;
+    if (badge) {
+      if (!wd) setBadge(badge, 'muted', '—');
+      else setBadge(badge, wd.enabled ? 'ok' : 'muted', wd.enabled ? 'включён' : 'выключен');
+    }
+    var wdStatus = $('wd-status');
+    if (wdStatus && ui.settings.dirty) {
+      wdStatus.textContent = 'есть несохранённые изменения';
+      wdStatus.style.color = 'var(--warn)';
+    }
+  }
+
+  function fillGroupSelect(selected) {
+    var sel = $('wd-group');
+    if (!sel) return;
+    var st = ui.state;
+    var names = st ? st.groups.map(function (g) { return g && g.name; }).filter(Boolean) : [];
+    var sig = names.join('\u0000');
+    var cur = selected || sel.value;
+    if (sig === wdGroupsSig && sel.options.length) {
+      if (cur && names.indexOf(cur) >= 0) sel.value = cur;
+      return;
+    }
+    wdGroupsSig = sig;
+    clear(sel);
+    if (!names.length) {
+      sel.appendChild(el('option', { value: '', text: '— нет групп —' }));
+      return;
+    }
+    names.forEach(function (n) { sel.appendChild(el('option', { value: n, text: n })); });
+    if (cur && names.indexOf(cur) >= 0) sel.value = cur;
+    else sel.value = names[0];
+  }
+
+  function fillWatchdogForm(force) {
+    var st = ui.state;
+    if (!st) return;
+    var wd = st.watchdog || {};
+    if (ui.settings.dirty && !force) { renderSettingsStatus(); return; }
+    renderWdSwitch(!!wd.enabled);
+    var iv = $('wd-interval');
+    if (iv) iv.value = wd.intervalSec !== undefined && wd.intervalSec !== null ? String(wd.intervalSec) : '';
+    var fs = $('wd-fails');
+    if (fs) fs.value = wd.failsToSwitch !== undefined && wd.failsToSwitch !== null ? String(wd.failsToSwitch) : '';
+    fillGroupSelect(wd.group);
+    var sig = JSON.stringify(wd.targets || []);
+    if (force || sig !== wdTargetsSig) {
+      renderTargets(wd.targets);
+      wdTargetsSig = sig;
+    }
+    var badge = $('wd-badge-settings');
+    if (badge) setBadge(badge, wd.enabled ? 'ok' : 'muted', wd.enabled ? 'включён' : 'выключен');
+  }
+
+  function renderTargets(targets) {
+    var box = $('wd-targets');
+    if (!box) return;
+    clear(box);
+    var list = Array.isArray(targets) ? targets.slice() : [];
+    if (!list.length) list.push({ name: 'YouTube', url: 'https://www.youtube.com/generate_204' });
+    list.forEach(function (t) {
+      box.appendChild(buildTargetRow(t && t.name ? t.name : '', t && t.url ? t.url : ''));
+    });
+  }
+
+  function buildTargetRow(name, url) {
+    var nameInput = el('input', {
+      class: 'input t-name', type: 'text', value: name,
+      placeholder: 'Имя (YouTube)', autocomplete: 'off', spellcheck: 'false'
+    });
+    var urlInput = el('input', {
+      class: 'input mono t-url', type: 'url', value: url,
+      placeholder: 'https://…/generate_204', inputmode: 'url', autocomplete: 'off', spellcheck: 'false'
+    });
+    var del = el('button', { type: 'button', class: 'btn small danger t-del', title: 'Удалить цель', text: '✕' });
+    var row = el('div', { class: 'target-row' }, [nameInput, urlInput, del]);
+    nameInput.addEventListener('input', markWdDirty);
+    urlInput.addEventListener('input', markWdDirty);
+    del.addEventListener('click', function () {
+      if (row.parentNode) row.parentNode.removeChild(row);
+      markWdDirty();
+    });
+    return row;
+  }
+
+  function markWdDirty() {
+    ui.settings.dirty = true;
+    ui.settings.targetsDirty = true;
+    var wdStatus = $('wd-status');
+    if (wdStatus) {
+      wdStatus.textContent = 'есть несохранённые изменения';
+      wdStatus.style.color = 'var(--warn)';
+    }
+  }
+
+  function collectWatchdog() {
+    var enabled = !!(ui.state && ui.state.watchdog && ui.state.watchdog.enabled);
+    var intervalSec = parseInt($('wd-interval') ? $('wd-interval').value : '', 10);
+    var fails = parseInt($('wd-fails') ? $('wd-fails').value : '', 10);
+    if (!isFinite(intervalSec) || intervalSec < 3) {
+      toast('Интервал проверки: целое число не меньше 3 секунд', 'bad');
+      return null;
+    }
+    if (!isFinite(fails) || fails < 1) {
+      toast('Сбоев до переключения: целое число не меньше 1', 'bad');
+      return null;
+    }
+    var group = $('wd-group') ? $('wd-group').value : '';
+    if (!group) {
+      toast('Не выбрана группа для сторожа', 'bad');
+      return null;
+    }
+    var rows = $('wd-targets') ? $('wd-targets').querySelectorAll('.target-row') : [];
+    var targets = [];
+    for (var i = 0; i < rows.length; i++) {
+      var nameEl = rows[i].querySelector('.t-name');
+      var urlEl = rows[i].querySelector('.t-url');
+      var name = nameEl ? nameEl.value.trim() : '';
+      var url = urlEl ? urlEl.value.trim() : '';
+      if (!name && !url) continue;
+      if (!url) { toast('У цели «' + (name || '—') + '» не задан URL', 'bad'); return null; }
+      if (!/^https?:\/\/\S+$/i.test(url)) {
+        toast('URL цели должен начинаться с http:// или https://', 'bad');
+        return null;
+      }
+      targets.push({ name: name || url, url: url });
+    }
+    if (!targets.length) {
+      toast('Добавьте хотя бы одну цель проверки', 'bad');
+      return null;
+    }
+    return { enabled: enabled, group: group, intervalSec: intervalSec, failsToSwitch: fails, targets: targets };
+  }
+
+  async function saveWatchdog() {
+    var payload = collectWatchdog();
+    if (!payload) return;
+    var btn = $('btn-wd-save');
+    setBusy(btn, true, 'Сохраняю…');
+    try {
+      await postJson('/api/watch', payload, 15000);
+      ui.settings.dirty = false;
+      ui.settings.targetsDirty = false;
+      var status = $('wd-status');
+      if (status) {
+        status.style.color = 'var(--ok)';
+        status.textContent = 'сохранено в ' + new Date().toLocaleTimeString('ru-RU');
+      }
+      toast('Настройки сторожа сохранены', 'ok');
+      await pollState();
+    } catch (e) {
+      toast('Не удалось сохранить настройки сторожа: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false, 'Сохранить');
     }
   }
 
@@ -4524,7 +4889,9 @@
     var st = ui.state;
     if (!st) { toast('Нет данных о группах — дождитесь ответа демона', 'warn'); return; }
     if (delay.running) { toast('Проверка задержки уже идёт', 'warn'); return; }
-    var group = currentGroup();
+    var wd = st.watchdog || {};
+    var groupName = wd.group || (st.groups[0] && st.groups[0].name) || '';
+    var group = groupName ? groupByName(groupName) : null;
     if (!group) { toast('Группа для переключения не найдена', 'bad'); return; }
     var nodes = groupNodes(group);
     if (!nodes.length) { toast('В группе «' + group.name + '» нет узлов', 'warn'); return; }
@@ -4712,6 +5079,13 @@
       var b = e.target && e.target.closest ? e.target.closest('[data-tab]') : null;
       if (b) setJournalTab(b.dataset.tab);
     });
+    var evFilters = $('ev-filters');
+    if (evFilters) evFilters.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-filter]') : null;
+      if (!b) return;
+      ui.journal.filter = b.dataset.filter;
+      renderEvents();
+    });
     var logLevel = $('log-level');
     if (logLevel) logLevel.addEventListener('change', function () {
       ui.journal.logLevel = logLevel.value;
@@ -4740,8 +5114,37 @@
       if (e.key === 'Enter') { e.preventDefault(); applyApi(); }
     });
 
+    var wdToggle = $('btn-wd-toggle');
+    if (wdToggle) wdToggle.addEventListener('click', function () { setWatchdogEnabled(wdToggle.dataset.on !== '1'); });
+    var wdQuick = $('wd-quick-toggle');
+    if (wdQuick) wdQuick.addEventListener('click', function () {
+      setWatchdogEnabled(!(ui.state && ui.state.watchdog && ui.state.watchdog.enabled));
+    });
     var topTest = $('btn-top-test');
     if (topTest) topTest.addEventListener('click', function () { runTest(null); });
+
+    ['wd-interval', 'wd-fails', 'wd-group'].forEach(function (id) {
+      var node = $(id);
+      if (node) node.addEventListener('change', markWdDirty);
+      if (node && (node.type === 'number' || node.tagName === 'INPUT') && node.type !== 'checkbox') {
+        node.addEventListener('input', markWdDirty);
+      }
+    });
+    var wdTargets = $('wd-targets');
+    if (wdTargets) wdTargets.addEventListener('input', markWdDirty);
+    var wdAdd = $('btn-wd-add');
+    if (wdAdd) wdAdd.addEventListener('click', function () {
+      var box = $('wd-targets');
+      if (!box) return;
+      box.appendChild(buildTargetRow('', ''));
+      markWdDirty();
+      var rows = box.querySelectorAll('.target-row');
+      var last = rows[rows.length - 1];
+      var input = last ? last.querySelector('.t-name') : null;
+      if (input) input.focus();
+    });
+    var wdSave = $('btn-wd-save');
+    if (wdSave) wdSave.addEventListener('click', saveWatchdog);
 
     var updCore = $('btn-upd-core');
     if (updCore) updCore.addEventListener('click', upgradeCore);
