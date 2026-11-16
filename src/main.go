@@ -20,6 +20,13 @@ import (
 var embeddedUI embed.FS
 
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "-v", "--version", "version":
+			fmt.Println("xrock", version)
+			return
+		}
+	}
 	flag.Parse()
 
 	if *flagLog != "" {
@@ -63,6 +70,7 @@ func main() {
 	go a.saveLoop()
 	go a.watchLoop()
 	go a.connsPoll()
+	go a.sysLoop()
 
 	srv := &http.Server{
 		Addr:              *flagListen,
@@ -74,5 +82,3 @@ func main() {
 		log.Fatalf("панель: %v", err)
 	}
 }
-
-var _ = fmt.Sprintf
