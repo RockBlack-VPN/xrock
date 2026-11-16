@@ -69,7 +69,6 @@ func main() {
 
 	go a.saveLoop()
 	go a.confLoop()
-	go a.watchLoop()
 	go a.connsPoll()
 	go a.sysLoop()
 

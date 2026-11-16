@@ -151,12 +151,13 @@
             <div class="card-b" id="cur-body"></div>
           </article>
 
-          <article class="card">
+          <article class="card wide" id="top-card">
             <header class="card-h">
-              <h2 data-ico="proxy">Сторож</h2>
-              <span class="badge" id="wd-badge-overview">—</span>
+              <h2 data-ico="fastest">Топ прокси</h2>
+              <span class="badge" id="top-badge">—</span>
+              <button type="button" class="btn small" id="btn-top-test">Проверить</button>
             </header>
-            <div class="card-b" id="wd-body"></div>
+            <div class="card-b" id="top-body"></div>
           </article>
 
           <article class="card">
@@ -218,13 +219,6 @@
           <div class="empty" id="srv-empty" hidden>Нет данных о группах. Демон ещё не прислал состояние.</div>
         </div>
 
-        <article class="card dead-card" id="srv-dead-wrap" hidden>
-          <header class="card-h">
-            <h2 data-ico="reject">Мёртвые узлы <span class="badge bad" id="srv-dead-count"></span></h2>
-            <span class="hint">по данным сторожа</span>
-          </header>
-          <div class="card-b" id="srv-dead"></div>
-        </article>
       </section>
 
       <!-- ================= СОЕДИНЕНИЯ ================= -->
@@ -327,11 +321,6 @@
         <div class="card" id="jrn-events-pane">
           <header class="card-h">
             <h2 data-ico="proxy">События <span class="badge" id="ev-count"></span></h2>
-            <div class="seg small" id="ev-filters">
-              <button type="button" class="seg-btn active" data-filter="all">Все</button>
-              <button type="button" class="seg-btn" data-filter="fail">Сбои</button>
-              <button type="button" class="seg-btn" data-filter="switch">Переключения</button>
-            </div>
           </header>
           <div class="card-b">
             <div class="events" id="ev-list"></div>
@@ -393,39 +382,6 @@
               </div>
               <p class="hint">По умолчанию: <code id="set-api-default">—</code>. Пустое поле = адрес по умолчанию. Значение хранится в localStorage этого браузера.</p>
               <p class="hint" id="set-api-status"></p>
-            </div>
-          </article>
-
-          <article class="card wide">
-            <header class="card-h">
-              <h2 data-ico="proxy">Сторож</h2>
-              <span class="badge" id="wd-badge-settings">—</span>
-            </header>
-            <div class="card-b">
-              <div class="form-grid">
-                <label class="check"><input type="checkbox" id="wd-enabled"> Сторож включён</label>
-                <label class="field">
-                  <span>Интервал проверки, сек</span>
-                  <input class="input" id="wd-interval" type="number" min="3" step="1" inputmode="numeric">
-                </label>
-                <label class="field">
-                  <span>Сбоев до переключения</span>
-                  <input class="input" id="wd-fails" type="number" min="1" step="1" inputmode="numeric">
-                </label>
-                <label class="field">
-                  <span>Группа</span>
-                  <select class="input select" id="wd-group"></select>
-                </label>
-              </div>
-
-              <h3 class="sub-h">Цели проверки</h3>
-              <div class="targets" id="wd-targets"></div>
-              <div class="row">
-                <button type="button" class="btn ghost" id="btn-wd-add">+ Добавить цель</button>
-                <button type="button" class="btn primary" id="btn-wd-save">Сохранить</button>
-                <span class="hint" id="wd-status"></span>
-              </div>
-              <p class="hint">Цели проверяются через активный прокси. Сохранение отправляет <code>POST /api/watch</code>.</p>
             </div>
           </article>
 

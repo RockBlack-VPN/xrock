@@ -1,87 +1,14 @@
 package main
 
-// Состояние панели: настройки сторожа, мёртвые серверы, история проверок,
-// журнал событий. Хранится одним JSON-файлом рядом с настройками mihomo.
+// Состояние демона: журнал событий и выбранные вручную узлы. Хранится одним
+// JSON-файлом рядом с настройками mihomo.
 
 import (
 	"encoding/json"
 	"os"
-	"sort"
-	"strings"
 	"sync"
 	"time"
 )
-
-type target struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-}
-
-type watchSettings struct {
-	Enabled       bool     `json:"enabled"`
-	Group         string   `json:"group"`
-	IntervalSec   int      `json:"intervalSec"`
-	FailsToSwitch int      `json:"failsToSwitch"`
-	Targets       []target `json:"targets"`
-}
-
-func defTargets() []target {
-	return []target{
-		{"YouTube", "https://www.youtube.com/generate_204"},
-		{"Telegram", "https://web.telegram.org/"},
-		{"Instagram", "https://www.instagram.com/"},
-	}
-}
-
-func defaultWatch() watchSettings {
-	return watchSettings{Enabled: true, IntervalSec: 10, FailsToSwitch: 2, Targets: defTargets()}
-}
-
-func (w *watchSettings) normalize() {
-	if w.IntervalSec < 5 {
-		w.IntervalSec = 10
-	}
-	if w.IntervalSec > 300 {
-		w.IntervalSec = 300
-	}
-	if w.FailsToSwitch < 1 {
-		w.FailsToSwitch = 2
-	}
-	if w.FailsToSwitch > 10 {
-		w.FailsToSwitch = 10
-	}
-	var ts []target
-	for _, t := range w.Targets {
-		t.Name = strings.TrimSpace(t.Name)
-		t.URL = strings.TrimSpace(t.URL)
-		if t.URL == "" || !strings.HasPrefix(t.URL, "http") {
-			continue
-		}
-		if t.Name == "" {
-			t.Name = t.URL
-		}
-		ts = append(ts, t)
-	}
-	if len(ts) == 0 {
-		ts = defTargets()
-	}
-	w.Targets = ts
-}
-
-type histPoint struct {
-	T    int64 `json:"t"`
-	MS   int   `json:"ms"`
-	Fail bool  `json:"fail"`
-}
-
-type proxyStat struct {
-	Delay   int         `json:"delay"`
-	OK      bool        `json:"ok"`
-	Fails   int         `json:"fails"`
-	LastT   int64       `json:"lastT"`
-	OkSince int64       `json:"okSince"`
-	History []histPoint `json:"history"`
-}
 
 type event struct {
 	T     int64  `json:"t"`
@@ -91,18 +18,11 @@ type event struct {
 }
 
 type state struct {
-	Watch    watchSettings         `json:"watch"`
-	Dead     map[string]int64      `json:"dead"`
-	Events   []event               `json:"events"`
-	Stats    map[string]*proxyStat `json:"stats"`
-	Selected map[string]string     `json:"selected"`
+	Events   []event           `json:"events"`
+	Selected map[string]string `json:"selected"`
 }
 
-const (
-	eventsMax   = 200
-	statHistMax = 60
-	deadCooldown = 300 // секунд: сколько не пробуем сервер после падения
-)
+const eventsMax = 200
 
 func loadState(path string) *state {
 	st := &state{}
@@ -113,19 +33,9 @@ func loadState(path string) *state {
 			st = &state{}
 		}
 	}
-	if st.Dead == nil {
-		st.Dead = map[string]int64{}
-	}
-	if st.Stats == nil {
-		st.Stats = map[string]*proxyStat{}
-	}
 	if st.Selected == nil {
 		st.Selected = map[string]string{}
 	}
-	if len(st.Watch.Targets) == 0 && st.Watch.IntervalSec == 0 && st.Watch.FailsToSwitch == 0 {
-		st.Watch = defaultWatch()
-	}
-	st.Watch.normalize()
 	return st
 }
 
@@ -152,22 +62,13 @@ type app struct {
 	saveC chan struct{}
 
 	// рабочее (тоже под mu)
-	running    bool
-	curGroup   string
-	curName    string // конечный узел, через который реально идёт трафик
-	curOK      bool
-	lastRound  int64
-	lastCheck  *checkResult
-	consecFail int
-	mihomoVer  string
-	apiErr     string
-	traffic    trafficState
+	mihomoVer string
+	apiErr    string
+	traffic   trafficState
 
 	// обновления (ядро/панель)
 	updMu     sync.Mutex
 	upgrading string // "" | core | panel
-
-	kick chan struct{} // перечитать настройки сторожа
 }
 
 func newApp(cl *clash, statePath, uiDir, logPath string) *app {
@@ -178,7 +79,6 @@ func newApp(cl *clash, statePath, uiDir, logPath string) *app {
 		logPath:   logPath,
 		started:   time.Now(),
 		saveC:     make(chan struct{}, 1),
-		kick:      make(chan struct{}, 1),
 	}
 	a.st = loadState(statePath)
 	return a
@@ -227,86 +127,20 @@ func (a *app) addEvent(kind, group, text string) {
 	a.save()
 }
 
-// addStat — обновить статистику узла по результату проверки.
-func (a *app) addStat(name string, res []targetResult, ok bool) {
-	if name == "" {
-		return
-	}
-	now := time.Now().Unix()
-	ms := 0
-	n := 0
-	for _, r := range res {
-		if r.OK && r.MS > 0 {
-			ms += r.MS
-			n++
-		}
-	}
-	if n > 0 {
-		ms /= n
-	}
+// setAPIErr запоминает состояние связи с mihomo и пишет событие при изменении.
+func (a *app) setAPIErr(err error) {
 	a.mu.Lock()
-	st := a.st.Stats[name]
-	if st == nil {
-		st = &proxyStat{}
-		a.st.Stats[name] = st
-	}
-	st.Delay = ms
-	st.OK = ok
-	st.LastT = now
-	if ok {
-		st.Fails = 0
-		if st.OkSince == 0 {
-			st.OkSince = now
-		}
+	before := a.apiErr
+	if err == nil {
+		a.apiErr = ""
 	} else {
-		st.Fails++
-		st.OkSince = 0
+		a.apiErr = err.Error()
 	}
-	st.History = append(st.History, histPoint{T: now, MS: ms, Fail: !ok})
-	if len(st.History) > statHistMax {
-		st.History = st.History[len(st.History)-statHistMax:]
-	}
+	changed := (before == "") != (a.apiErr == "")
 	a.mu.Unlock()
-	a.save()
-}
-
-// deadList — имена серверов, которые сейчас в «карантине».
-func (a *app) deadList() []string {
-	now := time.Now().Unix()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	var out []string
-	for name, until := range a.st.Dead {
-		if until > now {
-			out = append(out, name)
-		} else {
-			delete(a.st.Dead, name)
-		}
+	if changed && err != nil {
+		a.addEvent("bad", "", "mihomo API недоступен: "+err.Error())
+	} else if changed {
+		a.addEvent("ok", "", "mihomo API снова доступен")
 	}
-	sort.Strings(out)
-	return out
-}
-
-func (a *app) isDead(name string) bool {
-	now := time.Now().Unix()
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	until, ok := a.st.Dead[name]
-	return ok && until > now
-}
-
-func (a *app) markDead(name string) {
-	if name == "" {
-		return
-	}
-	a.mu.Lock()
-	a.st.Dead[name] = time.Now().Unix() + deadCooldown
-	a.mu.Unlock()
-	a.save()
-}
-
-func (a *app) clearDead(name string) {
-	a.mu.Lock()
-	delete(a.st.Dead, name)
-	a.mu.Unlock()
 }
