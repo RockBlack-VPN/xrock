@@ -302,6 +302,11 @@ main#views { padding: 18px; }
   white-space: nowrap;
 }
 .chip.small { font-size: 11px; padding: 2px 7px; }
+.chip .mihomo-api,
+.chip .mihomo-secret { color: var(--dim); }
+@media (max-width: 980px) {
+  .chip .mihomo-api { display: none; }
+}
 .chip.warn { color: #ffd68a; border-color: rgba(245, 196, 81, .32); background: rgba(245, 196, 81, .1); }
 
 .badge {
@@ -803,6 +808,7 @@ main#views { padding: 18px; }
 .table td.act { text-align: right; }
 
 .cell-main { display: block; word-break: break-word; color: #dfe9f7; }
+.cell-stack { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .cell-sub {
   display: block;
   font-size: 11px;
@@ -1066,9 +1072,13 @@ main#views { padding: 18px; }
   .table td.act {
     display: flex;
     justify-content: flex-end;
-    padding-top: 4px;
+    width: 100%;
+    max-width: none;
+    padding-top: 6px;
+    padding-right: 8px;
   }
   .table td.act::before { display: none; }
+  .cell-stack { min-width: 0; }
 
   .nodes { padding: 4px; }
   .node {
@@ -1088,8 +1098,9 @@ main#views { padding: 18px; }
   .node-actions .btn { font-size: 11px; padding: 4px 8px; }
 
   .target-row { grid-template-columns: minmax(0, 1fr) auto; }
-  .target-row .t-url { grid-column: 1 / -1; grid-row: 2; }
-  .target-row .t-del { grid-column: 2; grid-row: 1; }
+  .target-row .t-name { grid-column: 1 / -1; grid-row: 1; }
+  .target-row .t-url { grid-column: 1; grid-row: 2; }
+  .target-row .t-del { grid-column: 2; grid-row: 2; align-self: center; }
 
   .input.search { width: 100%; max-width: none; order: 3; }
   .view-head .actions { width: 100%; }
@@ -1100,6 +1111,16 @@ main#views { padding: 18px; }
   .metric b { font-size: 16px; }
   .log-tools { width: 100%; }
   .log-tools .check { margin-left: auto; }
+}
+
+@media (max-width: 560px) {
+  .brand-mobile b { display: none; }
+  #chip-daemon { display: none; }
+  .topbar { gap: 6px; padding: 8px 10px; }
+  .topbar-right { gap: 8px; }
+  .topbar-chips .chip { font-size: 10px; padding: 2px 6px; }
+  .link-state { max-width: none; font-size: 11px; }
+  .link-text { max-width: 96px; }
 }
 
 @media (max-width: 420px) {
