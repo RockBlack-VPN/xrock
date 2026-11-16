@@ -135,3 +135,25 @@ Xray/mihomo. Синхронный, может занять до 2–3 минут
 ```json
 { "ok": true, "before": "0.1.0", "after": "0.2.0", "restarting": true }
 ```
+
+## ASN и страна по IP
+
+Нужно для «куда ушёл трафик» в деталях соединения/журнала.
+
+`GET /api/asn?ip=1.2.3.4`:
+
+```json
+{
+  "ip": "151.101.192.176", "status": "success",
+  "country": "Canada", "countryCode": "CA",
+  "as": "AS54113 Fastly, Inc.", "asn": 54113, "asname": "FASTLY",
+  "isp": "Fastly, Inc.", "org": "",
+  "cached": true
+}
+```
+
+`GET /api/asn?ips=1.1.1.1,2.2.2.2` (до 10 адресов) → `{"results":{"1.1.1.1":{…},…}}`.
+
+Источник — бесплатный `ip-api.com` (лимит 45 запросов/мин), поэтому демон кеширует ответы
+на 24 часа. Если сети нет — `{"status":"fail","err":"нет связи с ip-api.com"}`.
+
