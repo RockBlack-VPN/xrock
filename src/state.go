@@ -163,6 +163,10 @@ type app struct {
 	apiErr     string
 	traffic    trafficState
 
+	// обновления (ядро/панель)
+	updMu     sync.Mutex
+	upgrading string // "" | core | panel
+
 	kick chan struct{} // перечитать настройки сторожа
 }
 
