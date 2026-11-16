@@ -34,6 +34,8 @@
     sys: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
     ver: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
     upd: { kind: '', running: false, startedAt: 0, timer: null },
+    drawer: { open: false, kind: '', key: '', ip: '', conn: null, event: null, log: null, scroll: 0 },
+    theme: { mode: 'dark', resolved: 'dark' },
     pendingSelect: Object.create(null)
   };
 
@@ -56,6 +58,9 @@
   var tabsScrolledTo = '';
   var rulesSig = '';
   var eventsSig = '';
+  var asnCache = Object.create(null);   // ip -> {t, info, err}
+  var asnLoading = Object.create(null); // ip -> true, пока идёт запрос
+  var logHintTimer = null;
 
   /* ------------------------------- утилиты ------------------------------- */
 
@@ -265,6 +270,486 @@
   function sleep(ms) {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
+
+  /* -------------------- страны, флаги, иконки сервисов -------------------- */
+
+  var THEME_KEY = 'xrock.theme';
+
+  // Столько флагов реально лежит в flags/ — остальные коды покажем бейджем.
+  var FLAG_SET = Object.create(null);
+  ('ae am ar at au az be bg br by ca ch cl cn cz de dk ee eg es fi fr gb ge gr hk hr hu ' +
+   'id ie il in is it jp kg kr kz lt lu lv md mn mx my nl no nz ph pl pt ro rs ru sa se sg si sk th tj tm tr tw ua us uz vn za'
+  ).split(' ').forEach(function (c) { FLAG_SET[c] = 1; });
+
+  var COUNTRY_NAMES = {
+    ae: 'ОАЭ', am: 'Армения', ar: 'Аргентина', at: 'Австрия', au: 'Австралия', az: 'Азербайджан',
+    be: 'Бельгия', bg: 'Болгария', br: 'Бразилия', by: 'Беларусь', ca: 'Канада', ch: 'Швейцария',
+    cl: 'Чили', cn: 'Китай', cz: 'Чехия', de: 'Германия', dk: 'Дания', ee: 'Эстония', eg: 'Египет',
+    es: 'Испания', fi: 'Финляндия', fr: 'Франция', gb: 'Великобритания', ge: 'Грузия', gr: 'Греция',
+    hk: 'Гонконг', hr: 'Хорватия', hu: 'Венгрия', id: 'Индонезия', ie: 'Ирландия', il: 'Израиль',
+    in: 'Индия', is: 'Исландия', it: 'Италия', jp: 'Япония', kg: 'Киргизия', kr: 'Южная Корея',
+    kz: 'Казахстан', lt: 'Литва', lu: 'Люксембург', lv: 'Латвия', md: 'Молдова', mn: 'Монголия',
+    mx: 'Мексика', my: 'Малайзия', nl: 'Нидерланды', no: 'Норвегия', nz: 'Новая Зеландия',
+    ph: 'Филиппины', pl: 'Польша', pt: 'Португалия', ro: 'Румыния', rs: 'Сербия', ru: 'Россия',
+    sa: 'Саудовская Аравия', se: 'Швеция', sg: 'Сингапур', si: 'Словения', sk: 'Словакия',
+    th: 'Таиланд', tj: 'Таджикистан', tm: 'Туркменистан', tr: 'Турция', tw: 'Тайвань',
+    ua: 'Украина', us: 'США', uz: 'Узбекистан', vn: 'Вьетнам', za: 'ЮАР'
+  };
+
+  // Синонимы в нижнем регистре → код страны. Слова из 1–3 букв сравниваются
+  // только целиком (иначе «us» нашлось бы внутри «Russia»), длинные — тоже
+  // целым словом: имя режется по цифрам и знакам, поэтому «Germany44fb» = germany + 44fb.
+  var COUNTRY_ALIASES = {
+    germany: 'de', deutschland: 'de', ger: 'de', deu: 'de', 'германия': 'de', 'германии': 'de',
+    finland: 'fi', suomi: 'fi', fin: 'fi', 'финляндия': 'fi',
+    sweden: 'se', sverige: 'se', swe: 'se', 'швеция': 'se',
+    netherlands: 'nl', holland: 'nl', nederland: 'nl', nld: 'nl', ned: 'nl',
+    'нидерланды': 'nl', 'голландия': 'nl',
+    france: 'fr', fra: 'fr', 'франция': 'fr',
+    poland: 'pl', polska: 'pl', pol: 'pl', 'польша': 'pl',
+    spain: 'es', espana: 'es', 'españa': 'es', esp: 'es', 'испания': 'es',
+    latvia: 'lv', latvija: 'lv', lva: 'lv', 'латвия': 'lv',
+    usa: 'us', 'united states': 'us', 'united states of america': 'us', america: 'us',
+    'сша': 'us', 'америка': 'us', 'соединенные штаты': 'us', 'соединённые штаты': 'us',
+    canada: 'ca', can: 'ca', 'канада': 'ca',
+    russia: 'ru', 'russian federation': 'ru', rus: 'ru', 'россия': 'ru', 'рф': 'ru',
+    'российская федерация': 'ru', moscow: 'ru', 'москва': 'ru',
+    belarus: 'by', blr: 'by', 'беларусь': 'by', 'белоруссия': 'by',
+    italy: 'it', italia: 'it', ita: 'it', 'италия': 'it',
+    austria: 'at', osterreich: 'at', 'österreich': 'at', aut: 'at', 'австрия': 'at',
+    'united kingdom': 'gb', 'great britain': 'gb', britain: 'gb', england: 'gb',
+    scotland: 'gb', wales: 'gb', gbr: 'gb', eng: 'gb', 'великобритания': 'gb',
+    'англия': 'gb', 'британия': 'gb',
+    norway: 'no', norge: 'no', nor: 'no', 'норвегия': 'no',
+    india: 'in', ind: 'in', 'индия': 'in',
+    'south africa': 'za', zaf: 'za', 'юар': 'za', 'южная африка': 'za',
+    turkey: 'tr', turkiye: 'tr', 'türkiye': 'tr', turkei: 'tr', tur: 'tr', 'турция': 'tr',
+    switzerland: 'ch', schweiz: 'ch', suisse: 'ch', che: 'ch', 'швейцария': 'ch',
+    japan: 'jp', jpn: 'jp', nippon: 'jp', 'япония': 'jp',
+    'south korea': 'kr', korea: 'kr', kor: 'kr', 'корея': 'kr', 'южная корея': 'kr',
+    singapore: 'sg', sgp: 'sg', 'сингапур': 'sg',
+    'hong kong': 'hk', hongkong: 'hk', hkg: 'hk', 'гонконг': 'hk',
+    taiwan: 'tw', twn: 'tw', 'тайвань': 'tw',
+    ukraine: 'ua', ukr: 'ua', 'украина': 'ua',
+    kazakhstan: 'kz', kaz: 'kz', 'казахстан': 'kz',
+    georgia: 'ge', geo: 'ge', 'грузия': 'ge',
+    armenia: 'am', arm: 'am', 'армения': 'am',
+    moldova: 'md', mda: 'md', 'молдова': 'md', 'молдавия': 'md',
+    romania: 'ro', rou: 'ro', 'românia': 'ro', 'румыния': 'ro',
+    bulgaria: 'bg', bgr: 'bg', 'болгария': 'bg',
+    czech: 'cz', czechia: 'cz', 'czech republic': 'cz', cze: 'cz', 'чехия': 'cz',
+    slovakia: 'sk', slovensko: 'sk', svk: 'sk', 'словакия': 'sk',
+    hungary: 'hu', magyarorszag: 'hu', hun: 'hu', 'венгрия': 'hu',
+    lithuania: 'lt', lietuva: 'lt', ltu: 'lt', 'литва': 'lt',
+    estonia: 'ee', eesti: 'ee', est: 'ee', 'эстония': 'ee',
+    denmark: 'dk', danmark: 'dk', dnk: 'dk', 'дания': 'dk',
+    belgium: 'be', belgique: 'be', bel: 'be', 'бельгия': 'be',
+    ireland: 'ie', eire: 'ie', 'éire': 'ie', irl: 'ie', 'ирландия': 'ie',
+    portugal: 'pt', prt: 'pt', 'португалия': 'pt',
+    greece: 'gr', hellas: 'gr', grc: 'gr', 'греция': 'gr',
+    serbia: 'rs', srbija: 'rs', srb: 'rs', 'сербия': 'rs',
+    croatia: 'hr', hrvatska: 'hr', hrv: 'hr', 'хорватия': 'hr',
+    slovenia: 'si', slovenija: 'si', svn: 'si', 'словения': 'si',
+    luxembourg: 'lu', lux: 'lu', 'люксембург': 'lu',
+    iceland: 'is', island: 'is', isl: 'is', 'исландия': 'is',
+    australia: 'au', aus: 'au', 'австралия': 'au',
+    'new zealand': 'nz', nzl: 'nz', 'новая зеландия': 'nz',
+    brazil: 'br', brasil: 'br', bra: 'br', 'бразилия': 'br',
+    argentina: 'ar', arg: 'ar', 'аргентина': 'ar',
+    chile: 'cl', chl: 'cl', 'чили': 'cl',
+    mexico: 'mx', 'méxico': 'mx', mex: 'mx', 'мексика': 'mx',
+    uae: 'ae', emirates: 'ae', 'united arab emirates': 'ae', are: 'ae', 'оаэ': 'ae',
+    'эмираты': 'ae',
+    israel: 'il', isr: 'il', 'израиль': 'il',
+    'saudi arabia': 'sa', saudi: 'sa', sau: 'sa', 'саудовская аравия': 'sa',
+    egypt: 'eg', egy: 'eg', 'египет': 'eg',
+    thailand: 'th', tha: 'th', 'таиланд': 'th',
+    vietnam: 'vn', 'viet nam': 'vn', vnm: 'vn', 'вьетнам': 'vn',
+    malaysia: 'my', mys: 'my', 'малайзия': 'my',
+    indonesia: 'id', 'индонезия': 'id',
+    philippines: 'ph', phl: 'ph', 'филиппины': 'ph',
+    china: 'cn', chn: 'cn', 'китай': 'cn',
+    mongolia: 'mn', mng: 'mn', 'монголия': 'mn',
+    uzbekistan: 'uz', uzb: 'uz', 'узбекистан': 'uz',
+    azerbaijan: 'az', aze: 'az', 'азербайджан': 'az',
+    kyrgyzstan: 'kg', kirgizia: 'kg', kgz: 'kg', 'киргизия': 'kg', 'кыргызстан': 'kg',
+    tajikistan: 'tj', tjk: 'tj', 'таджикистан': 'tj',
+    turkmenistan: 'tm', tkm: 'tm', 'туркменистан': 'tm'
+  };
+
+  // словосочетания ищем подстрокой (в т.ч. через дефисы: «United-Kingdom-1»)
+  var COUNTRY_PHRASES = Object.keys(COUNTRY_ALIASES).filter(function (k) {
+    return k.indexOf(' ') >= 0;
+  }).sort(function (a, b) { return b.length - a.length; });
+
+  var ICON_SET = Object.create(null);
+  ('proxy userlist fallback fastest global direct reject router server youtube telegram x discord ' +
+   'steam twitch instagram whatsapp netflix spotify github').split(' ').forEach(function (n) {
+    ICON_SET[n] = 1;
+  });
+
+  var GROUP_ICON_RULES = [
+    [/user[\s_-]*list/, 'userlist'],
+    [/fallback/, 'fallback'],
+    [/fastest|speed[\s_-]*test|auto[\s_-]*select|url[\s_-]*test/, 'fastest'],
+    [/global/, 'global'],
+    [/direct/, 'direct'],
+    [/reject|block|advert|adblock|\bads\b/, 'reject'],
+    [/youtube|\byt\b/, 'youtube'],
+    [/twitter|^x$|\bx[\s_-]?com/, 'x'],
+    [/discord/, 'discord'],
+    [/steam/, 'steam'],
+    [/twitch/, 'twitch'],
+    [/telegram|\btg\b/, 'telegram'],
+    [/instagram|\big\b/, 'instagram'],
+    [/netflix/, 'netflix'],
+    [/spotify/, 'spotify'],
+    [/github/, 'github'],
+    [/whatsapp/, 'whatsapp'],
+    [/proxy|select|manual|выбор/, 'proxy'],
+    [/router|keenetic|mihomo/, 'router']
+  ];
+
+  function flagCodeFromEmoji(text) {
+    var m = String(text || '').match(/[\u{1F1E6}-\u{1F1FF}]{2}/u);
+    if (!m) return '';
+    var cps = Array.from(m[0]);
+    var code = '';
+    for (var i = 0; i < cps.length; i++) {
+      code += String.fromCharCode(cps[i].codePointAt(0) - 0x1F1E6 + 65);
+    }
+    code = code.toLowerCase();
+    return FLAG_SET[code] ? code : '';
+  }
+
+  // Страна узла: сначала эмодзи-флаг, потом словарь названий в имени.
+  function countryFromName(name) {
+    var raw = String(name === null || name === undefined ? '' : name);
+    if (!raw) return '';
+    var emoji = flagCodeFromEmoji(raw);
+    if (emoji) return emoji;
+    var norm = ' ' + raw.toLowerCase().replace(/[^a-z\u0430-\u044f\u0451]+/g, ' ').replace(/\s+/g, ' ').trim() + ' ';
+    for (var i = 0; i < COUNTRY_PHRASES.length; i++) {
+      if (norm.indexOf(' ' + COUNTRY_PHRASES[i] + ' ') >= 0) return COUNTRY_ALIASES[COUNTRY_PHRASES[i]];
+    }
+    var parts = norm.trim().split(' ');
+    for (var j = 0; j < parts.length; j++) {
+      var p = parts[j];
+      if (!p) continue;
+      var hit = COUNTRY_ALIASES[p];
+      if (hit) return hit;
+      if (p.length === 2 && FLAG_SET[p]) return p;
+    }
+    return '';
+  }
+
+  function countryName(code) {
+    var c = String(code || '').toLowerCase();
+    return COUNTRY_NAMES[c] || (c ? c.toUpperCase() : '');
+  }
+
+  // <img class="flag"> для известной страны, иначе нейтральный бейдж с кодом.
+  function flagEl(code, cls) {
+    var c = String(code || '').toLowerCase();
+    var extra = cls ? ' ' + cls : '';
+    function neutral() {
+      return el('span', {
+        class: 'flag flag-none' + extra,
+        title: c ? 'Страна: ' + countryName(c) : 'Страна не определена',
+        text: c ? c.toUpperCase().slice(0, 2) : '•'
+      });
+    }
+    if (FLAG_SET[c]) {
+      var img = el('img', {
+        class: 'flag' + extra,
+        src: 'flags/' + c + '.svg',
+        alt: c.toUpperCase(),
+        title: countryName(c),
+        loading: 'lazy',
+        decoding: 'async',
+        width: cls === 'sm' ? 20 : 24,
+        height: cls === 'sm' ? 15 : 18
+      });
+      // если файла флага нет в сборке — тихо заменяем на нейтральный бейдж
+      img.addEventListener('error', function () {
+        if (img.parentNode) img.parentNode.replaceChild(neutral(), img);
+      });
+      return img;
+    }
+    return neutral();
+  }
+
+  function flagForNode(name, cls) {
+    return flagEl(countryFromName(name), cls);
+  }
+
+  // Имя узла без эмодзи-флага: сам флаг теперь отдельной картинкой, а на Windows
+  // региональные индикаторы рисуются как «DE»/«de» и дублировали бы флаг.
+  function nodeLabel(name) {
+    var s = String(name === null || name === undefined ? '' : name);
+    if (!s) return '';
+    var fl = splitFlag(s);
+    return fl.flag ? (fl.rest || s) : s;
+  }
+
+  // Иконки icons/*.svg красятся через mask + currentColor (в <img> currentColor
+  // не наследуется и иконка осталась бы чёрной в тёмной теме).
+  function icoEl(name, cls) {
+    var n = ICON_SET[name] ? name : 'server';
+    var node = el('span', { class: 'ico' + (cls ? ' ' + cls : ''), 'aria-hidden': 'true' });
+    node.style.setProperty('--ico', 'url(icons/' + n + '.svg)');
+    return node;
+  }
+
+  function groupIconName(name) {
+    var s = String(name || '');
+    for (var i = 0; i < GROUP_ICON_RULES.length; i++) {
+      if (GROUP_ICON_RULES[i][0].test(s)) return GROUP_ICON_RULES[i][1];
+    }
+    return 'server';
+  }
+
+  // Встроенные «узлы» mihomo: у них нет страны, но есть подходящая иконка.
+  var BUILTIN_ICONS = {
+    direct: 'direct',
+    'direct-1': 'direct',
+    reject: 'reject',
+    'reject-drop': 'reject',
+    pass: 'direct',
+    global: 'global',
+    proxy: 'proxy'
+  };
+
+  // Иконка группы/встроенного узла либо флаг страны — то, что рисуем слева от имени.
+  function nodeBadge(name, cls) {
+    var key = String(name === null || name === undefined ? '' : name).trim().toLowerCase();
+    if (BUILTIN_ICONS[key]) return icoEl(BUILTIN_ICONS[key], cls === 'lg' ? 'lg' : 'sm');
+    if (isGroupName(name)) return icoEl(groupIconName(name), cls === 'lg' ? 'lg' : 'sm');
+    return flagForNode(name, cls);
+  }
+
+  function targetIconName(name) {
+    return groupIconName(name);
+  }
+
+  // Иконки в статической разметке: элементы с data-ico="router" и т.п.
+  function applyStaticIcons() {
+    var nodes = document.querySelectorAll('[data-ico]');
+    for (var i = 0; i < nodes.length; i++) {
+      var host = nodes[i];
+      var first = host.firstChild;
+      if (first && first.nodeType === 1 && first.classList && first.classList.contains('ico')) continue;
+      host.insertBefore(icoEl(host.getAttribute('data-ico')), first);
+    }
+  }
+
+  function copyText(text, okLabel) {
+    text = String(text === null || text === undefined ? '' : text);
+    if (!text) { toast('Нечего копировать', 'warn', 2000); return; }
+    function done(ok) {
+      toast(ok ? (okLabel || 'Скопировано') : 'Не удалось скопировать — выделите вручную', ok ? 'ok' : 'bad', 2200);
+    }
+    function legacy() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.top = '-1000px';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        done(!!ok);
+      } catch (e) { done(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, legacy);
+    } else {
+      legacy();
+    }
+  }
+
+  /* ------------------------- темы оформления ------------------------------ */
+
+  var THEME_META_COLOR = {
+    dark: '#0b0f14', light: '#eef2f7', midnight: '#050a15', nord: '#2e3440'
+  };
+
+  var THEME_LIST = [
+    {
+      id: 'dark', name: 'Тёмная', desc: 'текущая, по умолчанию',
+      prev: { bg: '#0b0f14', side: '#0e141b', card: '#151b24', accent: '#6ea8fe', line: '#243040', ok: '#3ddc97' }
+    },
+    {
+      id: 'light', name: 'Светлая', desc: 'дневная, высокий контраст',
+      prev: { bg: '#eef2f7', side: '#f8fafc', card: '#ffffff', accent: '#2563eb', line: '#d9e2ee', ok: '#0f8a5a' }
+    },
+    {
+      id: 'midnight', name: 'Полночь', desc: 'глубокий синий',
+      prev: { bg: '#050a15', side: '#060c18', card: '#0a1424', accent: '#5ea0ff', line: '#17273f', ok: '#34d399' }
+    },
+    {
+      id: 'nord', name: 'Nord', desc: 'северная палитра',
+      prev: { bg: '#2e3440', side: '#2b303b', card: '#3b4252', accent: '#88c0d0', line: '#4c566a', ok: '#a3be8c' }
+    },
+    {
+      id: 'system', name: 'Как в системе', desc: 'следовать теме ОС',
+      prev: { bg: '#141a24', side: '#0e141b', card: '#1c2431', accent: '#7ea9f7', line: '#2a3648', ok: '#3ddc97' },
+      sys: true
+    }
+  ];
+
+  function themeById(id) {
+    for (var i = 0; i < THEME_LIST.length; i++) {
+      if (THEME_LIST[i].id === id) return THEME_LIST[i];
+    }
+    return THEME_LIST[0];
+  }
+
+  function systemThemeMode() {
+    try {
+      return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } catch (e) { return 'dark'; }
+  }
+
+  function readThemeMode() {
+    var saved = '';
+    try { saved = localStorage.getItem(THEME_KEY) || ''; } catch (e) { saved = ''; }
+    if (saved === 'system') return 'system';
+    if (saved && themeById(saved).id === saved) return saved;
+    return 'dark';
+  }
+
+  function themePreviewSwatch(theme) {
+    var sw = el('span', { class: 'sw', 'aria-hidden': 'true' });
+    if (theme.sys) return sw;
+    var p = theme.prev;
+    [p.bg, p.card, p.accent].forEach(function (c) {
+      var i = el('i');
+      i.style.background = c;
+      sw.appendChild(i);
+    });
+    return sw;
+  }
+
+  function applyTheme(mode, persist) {
+    var m = mode === 'system' ? 'system' : (themeById(mode).id || 'dark');
+    var resolved = m === 'system' ? systemThemeMode() : m;
+    var root = document.documentElement;
+    root.setAttribute('data-theme', resolved);
+    root.setAttribute('data-theme-mode', m);
+    try { root.style.colorScheme = resolved === 'light' ? 'light' : 'dark'; } catch (e) { /* ignore */ }
+    ui.theme = { mode: m, resolved: resolved };
+    var meta = $('meta-theme-color');
+    if (meta) meta.setAttribute('content', THEME_META_COLOR[resolved] || THEME_META_COLOR.dark);
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, m); } catch (e) { /* приватный режим */ }
+    }
+    renderThemeMenu();
+    renderThemeCards();
+    renderThemeBadge();
+  }
+
+  function renderThemeBadge() {
+    var badge = $('theme-badge');
+    if (!badge) return;
+    var mode = (ui.theme && ui.theme.mode) || 'dark';
+    var t = themeById(mode);
+    if (mode === 'system') {
+      badge.textContent = 'как в системе · ' + (ui.theme.resolved === 'light' ? 'светлая' : 'тёмная');
+    } else {
+      badge.textContent = t.name.toLowerCase();
+    }
+    badge.className = 'badge muted';
+  }
+
+  function themeMenuOpen() {
+    var menu = $('theme-menu');
+    return !!(menu && !menu.hidden);
+  }
+
+  function setThemeMenu(open) {
+    var menu = $('theme-menu');
+    var btn = $('btn-theme');
+    if (!menu || !btn) return;
+    menu.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) renderThemeMenu();
+  }
+
+  function renderThemeMenu() {
+    var menu = $('theme-menu');
+    if (!menu) return;
+    clear(menu);
+    menu.appendChild(el('div', { class: 'theme-menu-h', text: 'Тема оформления' }));
+    var mode = (ui.theme && ui.theme.mode) || 'dark';
+    THEME_LIST.forEach(function (t) {
+      var active = t.id === mode;
+      menu.appendChild(el('button', {
+        type: 'button',
+        class: 'theme-item' + (active ? ' active' : '') + (t.sys ? ' sys' : ''),
+        role: 'menuitemradio',
+        'aria-checked': active ? 'true' : 'false',
+        dataset: { theme: t.id },
+        title: t.name + ' — ' + t.desc,
+        onclick: function () { applyTheme(t.id, true); setThemeMenu(false); toast('Тема: ' + t.name, 'ok', 1800); }
+      }, [
+        themePreviewSwatch(t),
+        el('span', { text: t.name }),
+        el('span', { class: 'tick', text: '✓' })
+      ]));
+    });
+  }
+
+  function renderThemeCards() {
+    var box = $('theme-cards');
+    if (!box) return;
+    var mode = (ui.theme && ui.theme.mode) || 'dark';
+    clear(box);
+    THEME_LIST.forEach(function (t) {
+      var active = t.id === mode;
+      var prev = el('span', { class: 'theme-prev', 'aria-hidden': 'true' }, [
+        el('span', { class: 'tp-card' }),
+        el('span', { class: 'tp-dot' }),
+        el('span', { class: 'tp-card two' }),
+        el('span', { class: 'tp-pill' })
+      ]);
+      prev.style.setProperty('--p-bg', t.prev.bg);
+      prev.style.setProperty('--p-side', t.prev.side);
+      prev.style.setProperty('--p-card', t.prev.card);
+      prev.style.setProperty('--p-accent', t.prev.accent);
+      prev.style.setProperty('--p-line', t.prev.line);
+      prev.style.setProperty('--p-ok', t.prev.ok);
+      box.appendChild(el('button', {
+        type: 'button',
+        class: 'theme-card' + (active ? ' active' : ''),
+        role: 'radio',
+        'aria-checked': active ? 'true' : 'false',
+        dataset: { theme: t.id },
+        title: t.name + ' — ' + t.desc,
+        onclick: function () { applyTheme(t.id, true); }
+      }, [
+        el('span', { class: 'tick', text: '✓' }),
+        prev,
+        el('span', { class: 'theme-name', text: t.name }),
+        el('span', { class: 'theme-desc', text: t.desc })
+      ]));
+    });
+  }
+
+  function watchSystemTheme() {
+    if (!window.matchMedia) return;
+    var mq;
+    try { mq = window.matchMedia('(prefers-color-scheme: light)'); } catch (e) { return; }
+    var onChange = function () {
+      if (ui.theme && ui.theme.mode === 'system') applyTheme('system', false);
+    };
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+
 
   function normBase(value) {
     var v = String(value || '').trim();
@@ -764,7 +1249,7 @@
     if (!ui.api || document.hidden) return;
     var level = ui.journal.logLevel || 'info';
     // уже подключены к этому уровню — не пересоздаём поток на каждом опросе состояния
-    if (streams.logs && streams.logLevel === level) return;
+    if (streams.logs && streams.logLevel === level) { scheduleLogHint(); return; }
     stopLogStream();
     setLogStatus('подключение к потоку…');
     var es;
@@ -772,11 +1257,15 @@
       es = new EventSource(ui.api + '/api/stream/logs?level=' + encodeURIComponent(level));
     } catch (e) {
       setLogStatus('не удалось открыть поток');
+      scheduleLogHint();
       return;
     }
     streams.logs = es;
     streams.logLevel = level;
-    es.onopen = function () { setLogStatus('поток активен · уровень ' + level); };
+    es.onopen = function () {
+      setLogStatus('поток активен · уровень ' + level);
+      scheduleLogHint();
+    };
     es.onmessage = function (ev) {
       var data = parseJson(ev.data);
       var entry;
@@ -787,7 +1276,10 @@
       }
       pushLog(entry);
     };
-    es.onerror = function () { setLogStatus('поток прерван · переподключение…'); };
+    es.onerror = function () {
+      setLogStatus('поток прерван · переподключение…');
+      scheduleLogHint();
+    };
   }
 
   function stopLogStream() {
@@ -796,6 +1288,7 @@
       streams.logs = null;
       streams.logLevel = '';
     }
+    hideLogHint();
   }
 
   function setLogStatus(text) {
@@ -810,13 +1303,15 @@
   function pushLog(entry) {
     var text = stripAnsi(entry.text || '');
     if (!text) return;
-    ui.journal.logs.push({ t: Date.now(), type: entry.type || 'info', text: text });
+    var item = { t: Date.now(), type: entry.type || 'info', text: text };
+    ui.journal.logs.push(item);
     if (ui.journal.logs.length > 500) ui.journal.logs.shift();
-    appendLogLine({ t: Date.now(), type: entry.type || 'info', text: text });
+    appendLogLine(item);
     if (ui.journal.logs.length > 500) {
       var list = $('log-list');
       if (list && list.firstChild) list.removeChild(list.firstChild);
     }
+    hideLogHint();
     setLogStatus('поток активен · уровень ' + (ui.journal.logLevel || 'info') + ' · ' + ui.journal.logs.length + ' строк');
   }
 
@@ -837,11 +1332,16 @@
     var lvl = logLevelClass(entry.type);
     var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
     var d = new Date(entry.t);
-    var line = el('div', { class: 'log-line ' + lvl }, [
+    var line = el('div', {
+      class: 'log-line ' + lvl,
+      title: 'Нажмите, чтобы разобрать строку',
+      dataset: { lvl: lvl }
+    }, [
       el('span', { class: 'log-t', text: pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) }),
       el('span', { class: 'log-lvl ' + lvl, text: lvl }),
       el('span', { class: 'log-msg', text: entry.text })
     ]);
+    line.__log = entry;
     list.appendChild(line);
     while (list.childNodes.length > 500) list.removeChild(list.firstChild);
     if (ui.journal.autoscroll || nearBottom) list.scrollTop = list.scrollHeight;
@@ -1021,6 +1521,8 @@
     if (VIEWS.indexOf(view) < 0) view = 'overview';
     var prev = ui.view;
     ui.view = view;
+    if (ui.drawer.open) closeDrawer(false);
+    setThemeMenu(false);
 
     VIEWS.forEach(function (name) {
       var sec = $('view-' + name);
@@ -1232,18 +1734,19 @@
     setBadge($('cur-badge'), healthCls, healthText);
 
     var title = el('div', { class: 'cur-name' }, [
-      el('span', { text: cur }),
+      nodeBadge(cur, 'lg'),
+      el('span', { text: nodeLabel(cur) }),
       group ? el('span', { class: 'badge muted', text: group.type || 'группа' }) : null
     ]);
     body.appendChild(title);
 
-    var chainText = chain.map(function (x) { return x.name; }).join(' → ');
+    var chainText = chain.map(function (x) { return nodeLabel(x.name); }).join(' → ');
     if (groupName) {
       body.appendChild(el('div', { class: 'cur-group' }, [
         'Группа ',
         el('b', { text: groupName }),
         chainText && chainText !== groupName ? ' · ' + chainText : '',
-        wdNode && wdNode !== cur ? ' · сторож считает активным: ' + wdNode : ''
+        wdNode && wdNode !== cur ? ' · сторож считает активным: ' + nodeLabel(wdNode) : ''
       ]));
     } else {
       body.appendChild(el('div', { class: 'cur-group', text: 'Группа не определена — сторож ещё не запускался.' }));
@@ -1265,7 +1768,7 @@
 
     if (targets.length) {
       if (lastCheck && lastCheck.name && lastCheck.name !== cur) {
-        body.appendChild(el('div', { class: 'hint', text: 'Последняя проверка целей относится к узлу ' + lastCheck.name }));
+        body.appendChild(el('div', { class: 'hint', text: 'Последняя проверка целей относится к узлу ' + nodeLabel(lastCheck.name) }));
       }
       var list = el('div', { class: 'cur-targets' });
       targets.forEach(function (r) {
@@ -1274,6 +1777,7 @@
         var val = ok ? (num(r.ms) > 0 ? fmtDelay(r.ms) : 'ok') : (r.err ? trim(r.err, 28) : 'сбой');
         list.appendChild(el('div', { class: 'tchk', title: (r.target || '') + (r.err ? ' — ' + r.err : '') }, [
           el('span', { class: ok ? 'dot-ok' : 'dot-bad' }),
+          icoEl(targetIconName(r.target), 'sm'),
           el('span', { class: 'tname', text: r.target || 'цель' }),
           el('span', { class: 'tval ' + (ok ? 'good' : 'bad'), text: val })
         ]));
@@ -1730,6 +2234,9 @@
       var active = g.name === activeName;
       var nodes = groupNodeCount(g);
       var now = g.now || '—';
+      var nowIsGroup = isGroupName(now);
+      var nowCode = nowIsGroup ? '' : countryFromName(now);
+      var nowIcon = nowIsGroup ? icoEl(groupIconName(now), 'sm') : (nowCode ? flagEl(nowCode, 'sm') : (BUILTIN_ICONS[String(now).toLowerCase()] ? icoEl(BUILTIN_ICONS[String(now).toLowerCase()], 'sm') : null));
       box.appendChild(el('button', {
         type: 'button',
         class: 'gtab' + (active ? ' active' : ''),
@@ -1738,13 +2245,16 @@
         title: g.name + ' · ' + (g.type || 'группа') + '\nтекущий: ' + now + '\n' + nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']),
         dataset: { group: g.name }
       }, [
-        el('span', { class: 'gtab-top' }, [
-          el('span', { class: 'gtab-name', text: g.name }),
-          el('span', { class: 'gtab-count', text: String(nodes) })
-        ]),
-        el('span', { class: 'gtab-sub' }, [
-          el('span', { class: 'gtab-type', text: g.type || 'группа' }),
-          el('span', { class: 'gtab-now', text: now })
+        el('span', { class: 'gtab-ico' }, [icoEl(groupIconName(g.name))]),
+        el('span', { class: 'gtab-main' }, [
+          el('span', { class: 'gtab-top' }, [
+            el('span', { class: 'gtab-name', text: g.name }),
+            el('span', { class: 'gtab-count', text: String(nodes) })
+          ]),
+          el('span', { class: 'gtab-sub' }, [
+            el('span', { class: 'gtab-type', text: g.type || 'группа' }),
+            el('span', { class: 'gtab-now' }, [nowIcon, el('span', { class: 'gtab-now-txt', text: nodeLabel(now), title: now })])
+          ])
         ])
       ]));
     });
@@ -1769,13 +2279,17 @@
 
     var selectable = isSelector(group);
     var nodes = groupNodeCount(group);
+    var nowName = group.now || '';
+    var nowIsGroup = isGroupName(nowName);
+    var nowCode = nowIsGroup ? '' : countryFromName(nowName);
     var cur = el('span', { class: 'srv-cur', title: 'Текущий узел группы' }, [
       el('span', { class: 'muted', text: 'текущий:' }),
-      el('b', { text: group.now || '—' })
+      nowIsGroup ? icoEl(groupIconName(nowName), 'sm') : (nowCode ? flagEl(nowCode, 'sm') : null),
+      el('b', { text: nodeLabel(nowName) || '—' })
     ]);
 
     box.appendChild(el('div', { class: 'srv-panel-title' }, [
-      el('h2', { text: group.name }),
+      el('h2', null, [icoEl(groupIconName(group.name)), el('span', { text: group.name })]),
       el('span', { class: 'badge muted', text: group.type || 'группа' }),
       el('span', { class: 'badge muted', text: nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']) }),
       cur,
@@ -1910,6 +2424,8 @@
     var target = isSub ? finalNode(name) : name;
     var dead = isDeadOrErr(name);
     var fl = splitFlag(name);
+    var shown = fl.flag ? fl.rest : name;
+    var cc = isSub ? '' : countryFromName(name);
     var key = (group ? group.name : '') + '\u0000' + name;
     var pending = !!ui.pendingSelect[key];
 
@@ -1919,30 +2435,17 @@
         (selectable ? '' : ' auto') + (pending ? ' pending' : ''),
       dataset: { name: name },
       title: name + '\n' + (isSub ? 'подгруппа · ' + nodeTypeText(name) : nodeTypeText(name)) +
+        (cc ? '\nстрана: ' + countryName(cc) : '') +
         '\nклик — ' + (selectable ? 'сделать активным' : 'группа выбирает автоматически') +
         '\nправый клик / удержание — тест'
     });
 
-    card.appendChild(el('span', { class: 'ncard-top' }, [
-      el('span', { class: 'node-flag', title: fl.code || '' }, fl.flag || fl.code || '•'),
-      el('span', { class: 'ncard-name', text: fl.flag ? fl.rest : name }),
-      current ? el('span', { class: 'ncard-check', text: '✓', title: 'Активный узел группы' }) : null
+    // флаг страны слева; у подгрупп — иконка группы
+    card.appendChild(el('span', { class: 'ncard-flag' }, [
+      isSub ? icoEl(groupIconName(name)) : flagEl(cc)
     ]));
 
-    var meta = el('span', { class: 'ncard-meta' }, [
-      isSub ? el('span', { class: 'badge muted', text: 'группа' }) : null,
-      el('span', { class: 'ncard-type', text: nodeTypeText(name) }),
-      !isSub && proxy && proxy.udp ? el('span', { class: 'ncard-udp', text: 'UDP' }) : null,
-      dead ? el('span', { class: 'badge bad', text: 'мёртв' }) : null
-    ]);
-    if (isSub && target && target !== name) {
-      meta.appendChild(el('span', {
-        class: 'ncard-via',
-        text: '→ ' + trim(target, 24),
-        title: 'Активный узел подгруппы: ' + target
-      }));
-    }
-    card.appendChild(meta);
+    card.appendChild(el('span', { class: 'ncard-name', text: shown, title: name }));
 
     var badge = delayBadge(target, {
       unknownTitle: 'Задержка ещё не измерена — правый клик / удержание по карточке запустит тест'
@@ -1950,18 +2453,40 @@
     if (isSub) {
       badge.title = (target && target !== name ? 'Задержка узла «' + target + '»: ' : 'Задержка: ') + (badge.title || '');
     }
+    card.appendChild(el('span', { class: 'ncard-delay' }, [badge]));
 
-    var right;
-    if (pending) {
-      right = el('span', { class: 'ncard-switch' }, [el('span', { class: 'spinner' }), el('span', { text: 'переключаю…' })]);
-    } else if (current) {
-      right = el('span', { class: 'badge ok ncard-active', text: '✓ активен' });
-    } else if (!selectable) {
-      right = el('span', { class: 'badge muted', text: 'авто' });
-    } else {
-      right = el('span', { class: 'ncard-hint', text: isSub ? 'выбрать группу' : 'выбрать' });
+    var meta = el('span', { class: 'ncard-meta' }, [
+      el('span', { class: 'ncard-type', text: isSub ? 'группа · ' + nodeTypeText(name) : nodeTypeText(name) }),
+      !isSub && proxy && proxy.udp ? el('span', { class: 'ncard-udp', text: 'UDP' }) : null,
+      dead ? el('span', { class: 'badge bad', text: 'мёртв' }) : null
+    ]);
+    if (isSub && target && target !== name) {
+      meta.appendChild(el('span', {
+        class: 'ncard-via',
+        text: '→ ' + trim(nodeLabel(target), 24),
+        title: 'Активный узел подгруппы: ' + target
+      }));
     }
-    card.appendChild(el('span', { class: 'ncard-foot' }, [badge, right]));
+    card.appendChild(meta);
+
+    var acts = el('span', { class: 'ncard-acts' });
+    if (pending) {
+      acts.appendChild(el('span', { class: 'ncard-switch' }, [el('span', { class: 'spinner' }), el('span', { text: 'переключаю…' })]));
+    } else {
+      if (current) acts.appendChild(el('span', { class: 'ncard-act on', text: '✓ активен' }));
+      else if (!selectable) acts.appendChild(el('span', { class: 'ncard-act auto', text: 'авто' }));
+      else acts.appendChild(el('span', { class: 'ncard-act', text: isSub ? 'выбрать группу' : 'выбрать' }));
+      acts.appendChild(el('span', {
+        class: 'ncard-act test',
+        text: 'тест',
+        title: 'Замерить задержку через прокси',
+        onclick: function (e) {
+          if (e) { e.preventDefault(); e.stopPropagation(); }
+          testNode(name, group);
+        }
+      }));
+    }
+    card.appendChild(acts);
 
     bindNodeGestures(card, name, group);
     return card;
@@ -2032,7 +2557,7 @@
     var target = isSub ? finalNode(name) : name;
     if (!target) return;
     if (isSub && target !== name) {
-      toast('Тест подгруппы «' + name + '»: измеряю активный узел ' + target, 'info', 2800);
+      toast('Тест подгруппы «' + name + '»: измеряю активный узел ' + nodeLabel(target), 'info', 2800);
     }
     runTest([target]);
   }
@@ -2053,7 +2578,7 @@
       await postJson('/api/select', { group: group.name, name: name }, 15000);
       var g = groupByName(group.name);
       if (g) g.now = name;
-      toast(isGroupName(name) ? 'Группа «' + group.name + '» → ' + name : 'Выбран ' + name, 'ok', 3200);
+      toast(isGroupName(name) ? 'Группа «' + group.name + '» → ' + nodeLabel(name) : 'Выбран ' + nodeLabel(name), 'ok', 3200);
       pollState();
     } catch (e) {
       toast('Не удалось переключить: ' + friendlyError(e), 'bad');
@@ -2080,7 +2605,7 @@
       list.appendChild(el('span', {
         class: 'dead-item',
         title: 'Мёртв по данным сторожа: ' + name
-      }, [el('span', { text: name })]));
+      }, [flagForNode(name, 'sm'), el('span', { text: nodeLabel(name) })]));
     });
   }
 
@@ -2112,19 +2637,23 @@
     var src = m.sourceIP || '';
     var srcPort = m.sourcePort || '';
     var chains = Array.isArray(c.chains) ? c.chains.slice().reverse() : [];
+    var dstText = dst ? dst + (dstPort ? ':' + dstPort : '') : (host && host !== '—' && dstPort ? host + ':' + dstPort : '');
     return {
       id: c.id !== undefined && c.id !== null ? String(c.id) : (host + '|' + (m.destinationPort || '') + '|' + (c.start || '')),
       host: String(host),
       rule: c.rule ? String(c.rule) : '',
       payload: c.rulePayload !== undefined && c.rulePayload !== null ? String(c.rulePayload) : '',
-      chain: chains.length ? chains.join(' → ') : (c.chain ? String(c.chain) : ''),
+      chain: chains.length ? chains.map(nodeLabel).join(' → ') : (c.chain ? String(c.chain) : ''),
+      chainList: chains,
       up: num(c.upload !== undefined ? c.upload : c.up),
       down: num(c.download !== undefined ? c.download : c.down),
       start: parseStart(c.start),
       network: m.network ? String(m.network) : '',
       type: m.type ? String(m.type) : '',
       src: src ? src + (srcPort ? ':' + srcPort : '') : '',
-      dst: dst ? dst + (dstPort ? ':' + dstPort : '') : '',
+      dst: dstText,
+      ip: dst ? String(dst) : (isIpAddr(host) ? String(host) : ''),
+      port: dstPort ? String(dstPort) : '',
       process: m.processPath ? String(m.processPath) : ''
     };
   }
@@ -2142,6 +2671,7 @@
       ui.conns.down = res && res.down !== undefined ? num(res.down) : ui.conns.list.reduce(function (a, c) { return a + c.down; }, 0);
       ui.conns.at = Date.now();
       ui.conns.err = '';
+      syncConnDrawer();
       if (ui.view === 'connections') renderConnections();
       else if (ui.view === 'overview') renderOverview();
     } catch (e) {
@@ -2151,6 +2681,18 @@
     } finally {
       ui.conns.loading = false;
     }
+  }
+
+  // Панель деталей не должна мешать автообновлению: выделение хранится по id,
+  // а данные в открытой панели подтягиваются из свежего списка.
+  function syncConnDrawer() {
+    if (!ui.drawer.open || ui.drawer.kind !== 'conn') return;
+    var found = null;
+    for (var i = 0; i < ui.conns.list.length; i++) {
+      if (ui.conns.list[i].id === ui.drawer.key) { found = ui.conns.list[i]; break; }
+    }
+    ui.drawer.conn = found;
+    renderDrawer();
   }
 
   function connMatches(c, q) {
@@ -2173,18 +2715,29 @@
 
     list.forEach(function (c) {
       var ruleText = c.rule || '—';
+      // если хоста нет и в таблице уже стоит IP, не дублируем «IP:порт» второй строкой
+      var dstNote = c.host && c.ip && c.host === c.ip ? '' : c.dst;
+      var selected = ui.drawer.open && ui.drawer.kind === 'conn' && ui.drawer.key === c.id;
       var closeBtn = el('button', {
         type: 'button', class: 'btn small ghost', title: 'Закрыть соединение',
-        onclick: function () { closeConnection(c.id, closeBtn); }
+        onclick: function (e) {
+          if (e) { e.preventDefault(); e.stopPropagation(); }
+          closeConnection(c.id, closeBtn);
+        }
       }, '✕');
 
-      var tr = el('tr', null, [
+      var tr = el('tr', {
+        class: 'conn-row' + (selected ? ' selected' : ''),
+        tabindex: '0',
+        'aria-label': 'Подробности соединения ' + c.host,
+        dataset: { id: c.id }
+      }, [
         el('td', { 'data-label': 'Хост' }, [
           el('div', { class: 'cell-stack' }, [
             el('span', { class: 'cell-main', text: c.host, title: c.host }),
             el('span', {
               class: 'cell-sub',
-              text: [c.network, c.type, c.dst, c.process ? c.process : ''].filter(Boolean).join(' · ') || (c.src ? 'из ' + c.src : ''),
+              text: [c.network, c.type, dstNote, c.process ? c.process : ''].filter(Boolean).join(' · ') || (c.src ? 'из ' + c.src : ''),
               title: [c.dst && 'назначение: ' + c.dst, c.src && 'источник: ' + c.src, c.process && 'процесс: ' + c.process].filter(Boolean).join('\n')
             })
           ])
@@ -2203,6 +2756,13 @@
         el('td', { 'data-label': 'Время', class: 'num', text: fmtDur(nowSec - c.start) }),
         el('td', { class: 'act', 'data-label': '' }, [closeBtn])
       ]);
+      tr.addEventListener('click', function () { openDrawer('conn', c.id, c); });
+      tr.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          openDrawer('conn', c.id, c);
+        }
+      });
       frag.appendChild(tr);
     });
     body.appendChild(frag);
@@ -2268,6 +2828,10 @@
     try {
       await apiJson('/api/connections?id=' + encodeURIComponent(id), { method: 'DELETE' }, 9000);
       ui.conns.list = ui.conns.list.filter(function (c) { return c.id !== id; });
+      if (ui.drawer.open && ui.drawer.kind === 'conn' && ui.drawer.key === String(id)) {
+        ui.drawer.conn = null;
+        renderDrawer();
+      }
       renderConnections();
       toast('Соединение закрыто', 'ok', 2000);
     } catch (e) {
@@ -2292,6 +2856,10 @@
     try {
       await apiJson('/api/connections', { method: 'DELETE' }, 15000);
       ui.conns.list = [];
+      if (ui.drawer.open && ui.drawer.kind === 'conn') {
+        ui.drawer.conn = null;
+        renderDrawer();
+      }
       renderConnections();
       toast('Все соединения закрыты', 'ok');
       pollState();
@@ -2300,6 +2868,444 @@
     } finally {
       setBusy(btn, false, 'Закрыть всё');
     }
+  }
+
+  /* ------------------------- панель деталей (drawer) ---------------------- */
+
+  function drawerEls() {
+    return {
+      root: $('drawer-root'),
+      panel: $('drawer'),
+      body: $('drawer-body'),
+      foot: $('drawer-foot'),
+      title: $('drawer-title'),
+      kind: $('drawer-kind')
+    };
+  }
+
+  function openDrawer(kind, key, payload) {
+    var els = drawerEls();
+    if (!els.root || !els.body) return;
+    var prevFocus = document.activeElement;
+    if (kind === 'conn') { ui.drawer.conn = payload || null; ui.drawer.event = null; ui.drawer.log = null; }
+    else if (kind === 'event') { ui.drawer.event = payload || null; ui.drawer.conn = null; ui.drawer.log = null; }
+    else if (kind === 'log') { ui.drawer.log = payload || null; ui.drawer.conn = null; ui.drawer.event = null; }
+    ui.drawer.open = true;
+    ui.drawer.kind = kind;
+    ui.drawer.key = String(key === undefined || key === null ? '' : key);
+    els.root.hidden = false;
+    ui.drawer.prevFocus = prevFocus || null;
+    document.body.style.overflow = 'hidden';
+    renderDrawer();
+    if (els.panel) {
+      try { els.panel.focus({ preventScroll: true }); } catch (e) { try { els.panel.focus(); } catch (e2) { /* ignore */ } }
+    }
+    if (ui.view === 'connections') renderConnections();
+    if (ui.view === 'journal') renderEvents();
+  }
+
+  function closeDrawer(restoreFocus) {
+    var els = drawerEls();
+    if (!ui.drawer.open) return;
+    ui.drawer.open = false;
+    ui.drawer.kind = '';
+    ui.drawer.key = '';
+    ui.drawer.conn = null;
+    ui.drawer.event = null;
+    ui.drawer.log = null;
+    if (els.root) els.root.hidden = true;
+    if (els.body) clear(els.body);
+    if (els.foot) clear(els.foot);
+    document.body.style.overflow = '';
+    if (ui.view === 'connections') renderConnections();
+    if (ui.view === 'journal') renderEvents();
+    var prev = ui.drawer.prevFocus;
+    ui.drawer.prevFocus = null;
+    if (restoreFocus !== false && prev && typeof prev.focus === 'function') {
+      try { prev.focus({ preventScroll: true }); } catch (e) { try { prev.focus(); } catch (e2) { /* ignore */ } }
+    }
+  }
+
+  function renderDrawer() {
+    var els = drawerEls();
+    if (!els.root || !els.body || !ui.drawer.open) return;
+    var scroll = els.body.scrollTop;
+    clear(els.body);
+    clear(els.foot);
+    if (ui.drawer.kind === 'conn') renderConnDrawer(ui.drawer.conn, els);
+    else if (ui.drawer.kind === 'event') renderEventDrawer(ui.drawer.event, els);
+    else if (ui.drawer.kind === 'log') renderLogDrawer(ui.drawer.log, els);
+    els.body.scrollTop = scroll;
+  }
+
+  function dsec(title, iconName) {
+    var head = el('h3', { class: 'dsec-h' }, iconName ? [icoEl(iconName, 'sm'), el('span', { text: title })] : title);
+    return el('section', { class: 'dsec' }, [head]);
+  }
+
+  function drow(key, value, mono, title) {
+    var v;
+    if (value instanceof Node) v = value;
+    else v = el('span', { text: value === '' || value === null || value === undefined ? '—' : String(value) });
+    if (title) v.title = title;
+    else if (!(value instanceof Node)) v.title = String(value === null || value === undefined ? '' : value);
+    return el('div', { class: 'drow' }, [
+      el('span', { class: 'drow-k', text: key }),
+      mono ? el('span', { class: 'drow-v mono' }, [v]) : el('span', { class: 'drow-v' }, [v])
+    ]);
+  }
+
+  function chainChips(list) {
+    var arr = Array.isArray(list) ? list.filter(Boolean) : [];
+    if (!arr.length) return el('span', { class: 'drow-v', text: '—' });
+    var box = el('span', { class: 'chain' });
+    arr.forEach(function (name, i) {
+      if (i) box.appendChild(el('span', { class: 'chain-arrow', text: '→' }));
+      var isGroup = isGroupName(name);
+      var item = el('span', {
+        class: 'chain-node' + (isGroup ? ' group' : '') + (!isGroup && i === arr.length - 1 ? ' last' : ''),
+        title: isGroup ? 'Группа ' + name : name
+      }, [nodeBadge(name, 'sm'), el('b', { text: nodeLabel(name) })]);
+      box.appendChild(item);
+    });
+    return box;
+  }
+
+  function isIpAddr(text) {
+    var s = String(text || '').trim();
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(s)) return true;
+    return s.indexOf(':') >= 0 && /^[0-9a-fA-F:.]+$/.test(s);
+  }
+
+  function asnBox(ip) {
+    var box = el('div', { class: 'asn-box' });
+    box.dataset.ip = ip ? String(ip) : '';
+    paintAsn(box, ip);
+    return box;
+  }
+
+  function asnEntryFor(ip) {
+    var e = asnCache[ip];
+    if (!e) return null;
+    // ошибку держим недолго, успешный ответ — 6 часов (демон кеширует на 24 ч)
+    if (Date.now() - e.t > (e.err ? 60000 : 6 * 3600 * 1000)) return null;
+    return e;
+  }
+
+  function ensureAsn(ip) {
+    if (!ip || asnLoading[ip]) return;
+    asnLoading[ip] = true;
+    apiJson('/api/asn?ip=' + encodeURIComponent(ip), null, 9000)
+      .then(function (info) {
+        asnCache[ip] = { t: Date.now(), info: info && typeof info === 'object' ? info : {}, err: '' };
+      })
+      .catch(function (e) {
+        asnCache[ip] = { t: Date.now(), info: null, err: friendlyError(e) };
+      })
+      .then(function () {
+        asnLoading[ip] = false;
+        repaintAsn(ip);
+      });
+  }
+
+  function repaintAsn(ip) {
+    var boxes = document.querySelectorAll('.asn-box');
+    for (var i = 0; i < boxes.length; i++) {
+      if (boxes[i].dataset.ip === ip) paintAsn(boxes[i], ip);
+    }
+  }
+
+  function paintAsn(box, ip) {
+    if (!box) return;
+    while (box.firstChild) box.removeChild(box.firstChild);
+    ip = ip ? String(ip) : '';
+    if (!ip) {
+      box.appendChild(el('div', { class: 'asn-empty', text: 'Нет IP — страну и ASN не определить (в метаданных только домен).' }));
+      return;
+    }
+    if (asnLoading[ip] && !asnCache[ip]) {
+      box.appendChild(el('div', { class: 'asn-loading' }, [
+        el('span', { class: 'spinner' }),
+        el('span', { text: 'запрашиваю страну и ASN…' })
+      ]));
+      return;
+    }
+    var e = asnEntryFor(ip);
+    if (!e) {
+      ensureAsn(ip);
+      box.appendChild(el('div', { class: 'asn-loading' }, [
+        el('span', { class: 'spinner' }),
+        el('span', { text: 'запрашиваю страну и ASN…' })
+      ]));
+      return;
+    }
+    var retry = el('button', {
+      type: 'button', class: 'btn small ghost', text: 'Повторить',
+      onclick: function () {
+        delete asnCache[ip];
+        paintAsn(box, ip);
+      }
+    });
+    if (e.err) {
+      box.appendChild(el('div', { class: 'asn-err' }, [
+        el('span', { text: 'нет данных: ' + e.err }),
+        retry
+      ]));
+      box.appendChild(el('div', { class: 'asn-note', text: 'Гео и ASN отдаёт демон (GET /api/asn). Если эндпоинта нет — обновите xrock.' }));
+      return;
+    }
+    var info = e.info || {};
+    if (!info || info.status === 'fail' || (!info.country && !info.countryCode && !info.asn && !info.asname)) {
+      box.appendChild(el('div', { class: 'asn-err' }, [
+        el('span', { text: 'нет данных' + (info && info.err ? ': ' + info.err : '') }),
+        retry
+      ]));
+      return;
+    }
+    var cc = String(info.countryCode || '').toLowerCase();
+    box.appendChild(el('div', { class: 'asn-head' }, [
+      flagEl(cc, 'sm'),
+      el('span', { class: 'asn-country', text: info.country || countryName(cc) || 'страна неизвестна' }),
+      el('span', { class: 'asn-ip', text: ip })
+    ]));
+    var asNum = num(info.asn) || 0;
+    var asName = String(info.asname || '');
+    var asLine = asNum ? ('AS' + asNum + (asName ? ' · ' + asName : '')) : String(info.as || '');
+    if (asLine) box.appendChild(el('div', { class: 'asn-row' }, [el('b', { text: asLine })]));
+    if (info.isp && info.isp !== asName) {
+      box.appendChild(el('div', { class: 'asn-row' }, [el('span', { text: 'ISP' }), el('b', { text: info.isp })]));
+    }
+    if (info.org && info.org !== asName && info.org !== info.isp) {
+      box.appendChild(el('div', { class: 'asn-row' }, [el('span', { text: 'организация' }), el('b', { text: info.org })]));
+    }
+    if (info.cached) box.appendChild(el('div', { class: 'asn-note', text: 'из кеша демона (24 ч)' }));
+  }
+
+  function renderConnDrawer(c, els) {
+    els.kind.textContent = 'Соединение';
+    if (!c) {
+      els.title.textContent = 'Соединение закрыто';
+      els.body.appendChild(el('div', { class: 'empty', text: 'Этого соединения больше нет: оно закрыто или завершилось.' }));
+      els.body.appendChild(el('div', { class: 'dnote', text: 'Панель можно закрыть — таблица обновляется сама.' }));
+      return;
+    }
+    els.title.textContent = c.host && c.host !== '—' ? c.host : (c.dst || 'Без хоста');
+    var nowSec = Math.floor(Date.now() / 1000);
+
+    var s1 = dsec('Соединение', 'fallback');
+    s1.appendChild(drow('Хост', c.host || '—', false, c.host));
+    s1.appendChild(drow('IP и порт', c.dst || '—', true));
+    s1.appendChild(drow('Сеть', [c.network, c.type].filter(Boolean).join(' · ') || '—'));
+    s1.appendChild(drow('Источник', c.src || '—', true));
+    if (c.process) s1.appendChild(drow('Процесс', c.process, false, c.process));
+    els.body.appendChild(s1);
+
+    var s2 = dsec('Трафик и время', 'fastest');
+    s2.appendChild(drow('Отдано ↑', fmtBytes(c.up), false, c.up + ' Б'));
+    s2.appendChild(drow('Скачано ↓', fmtBytes(c.down), false, c.down + ' Б'));
+    s2.appendChild(drow('Старт', c.start ? fmtTime(c.start) : '—', false, c.start ? fmtAgo(c.start) : ''));
+    s2.appendChild(drow('Длительность', c.start ? fmtDur(nowSec - c.start) : '—'));
+    els.body.appendChild(s2);
+
+    var s3 = dsec('Маршрут', 'proxy');
+    s3.appendChild(drow('Правило', c.rule || '—', false, c.payload || ''));
+    if (c.payload) s3.appendChild(drow('Содержимое', c.payload, true));
+    var chainList = Array.isArray(c.chainList) && c.chainList.length ? c.chainList :
+      (c.chain ? String(c.chain).split(/\s*→\s*/) : []);
+    s3.appendChild(drow('Цепочка', chainChips(chainList)));
+    els.body.appendChild(s3);
+
+    var s4 = dsec('Куда ушёл трафик', 'global');
+    s4.appendChild(asnBox(c.ip));
+    els.body.appendChild(s4);
+
+    var ipBtn = el('button', { type: 'button', class: 'btn small', text: 'Копировать IP' });
+    ipBtn.disabled = !c.ip;
+    ipBtn.addEventListener('click', function () { copyText(c.ip, 'IP скопирован'); });
+    var hostBtn = el('button', { type: 'button', class: 'btn small', text: 'Копировать хост' });
+    hostBtn.addEventListener('click', function () { copyText(c.host && c.host !== '—' ? c.host : '', 'Хост скопирован'); });
+    var closeBtn = el('button', {
+      type: 'button', class: 'btn small danger', text: 'Закрыть соединение',
+      onclick: function () { closeConnection(c.id, closeBtn); }
+    });
+    els.foot.appendChild(ipBtn);
+    els.foot.appendChild(hostBtn);
+    els.foot.appendChild(closeBtn);
+  }
+
+  function renderEventDrawer(ev, els) {
+    els.kind.textContent = 'Событие';
+    if (!ev) {
+      els.title.textContent = 'Событие';
+      els.body.appendChild(el('div', { class: 'empty', text: 'Событие больше не в списке.' }));
+      return;
+    }
+    var kind = String(ev.kind || 'info').toLowerCase();
+    if (['info', 'warn', 'bad', 'ok'].indexOf(kind) < 0) kind = 'info';
+    els.title.textContent = trim(ev.text || 'Событие', 90);
+
+    var s1 = dsec('Событие', 'proxy');
+    s1.appendChild(drow('Время', fmtTime(ev.t) + (ev.t ? ' · ' + fmtAgo(ev.t) : '')));
+    s1.appendChild(drow('Тип', el('span', { class: 'badge ' + kind, text: kind })));
+    s1.appendChild(drow('Группа', ev.group || '—'));
+    els.body.appendChild(s1);
+
+    var s2 = dsec('Текст', 'server');
+    s2.appendChild(el('code', { class: 'dcode', text: ev.text || '—' }));
+    els.body.appendChild(s2);
+
+    var copyBtn = el('button', { type: 'button', class: 'btn small', text: 'Копировать текст' });
+    copyBtn.addEventListener('click', function () { copyText(ev.text || '', 'Событие скопировано'); });
+    els.foot.appendChild(copyBtn);
+    els.foot.appendChild(el('button', { type: 'button', class: 'btn small ghost', text: 'Закрыть', onclick: function () { closeDrawer(); } }));
+  }
+
+  function splitEndpoint(text) {
+    var s = String(text === null || text === undefined ? '' : text).trim().replace(/[,;]$/, '');
+    if (!s) return { host: '', port: '' };
+    var v6 = s.match(/^\[([0-9a-fA-F:.]+)\](?::(\d+))?$/);
+    if (v6) return { host: v6[1], port: v6[2] || '' };
+    var m = s.match(/^(.+):(\d{1,5})$/);
+    if (m) return { host: m[1], port: m[2] };
+    return { host: s, port: '' };
+  }
+
+  // Разбор строки лога mihomo:
+  // [TCP] 1.2.3.4:5678 --> host.com:443 match RuleSet(...) using PROXY[Germany-44fb(ws)]
+  function parseLogLine(text) {
+    var raw = stripAnsi(String(text === null || text === undefined ? '' : text)).trim();
+    var out = {
+      raw: raw,
+      net: '',
+      src: { host: '', port: '' },
+      dst: { host: '', port: '' },
+      rule: '',
+      group: '',
+      node: '',
+      ok: false
+    };
+    var rest = raw;
+    var m = rest.match(/^\[([^\]]{1,14})\]\s*([\s\S]*)$/);
+    if (m) { out.net = m[1].toLowerCase(); rest = m[2]; }
+    var ai = rest.indexOf('-->');
+    if (ai < 0) return out;
+    out.ok = true;
+    out.src = splitEndpoint(rest.slice(0, ai));
+    var right = rest.slice(ai + 3).trim();
+    var usingIdx = right.lastIndexOf(' using ');
+    var main = usingIdx >= 0 ? right.slice(0, usingIdx).trim() : right;
+    var using = usingIdx >= 0 ? right.slice(usingIdx + 7).trim() : '';
+    var sp = main.search(/\s/);
+    out.dst = splitEndpoint(sp >= 0 ? main.slice(0, sp) : main);
+    var rule = sp >= 0 ? main.slice(sp).trim() : '';
+    out.rule = rule.replace(/^match\s+/i, '').trim();
+    if (using) {
+      var br = using.match(/^([^\[]*)\[([\s\S]+)\]$/);
+      if (br) {
+        out.group = br[1].trim();
+        out.node = br[2].trim();
+      } else {
+        out.group = using.trim();
+      }
+    }
+    return out;
+  }
+
+  function logGeoIp(p) {
+    if (p && p.dst && isIpAddr(p.dst.host)) return p.dst.host;
+    if (p && p.src && isIpAddr(p.src.host)) return p.src.host;
+    return '';
+  }
+
+  function renderLogDrawer(entry, els) {
+    els.kind.textContent = 'Строка лога mihomo';
+    if (!entry) {
+      els.title.textContent = 'Строка лога';
+      els.body.appendChild(el('div', { class: 'empty', text: 'Строка больше не в буфере.' }));
+      return;
+    }
+    var p = parseLogLine(entry.text);
+    els.title.textContent = p.ok
+      ? ((p.dst.host || '—') + (p.dst.port ? ':' + p.dst.port : ''))
+      : trim(entry.text || 'Строка лога', 80);
+
+    var s0 = dsec('Запись', 'server');
+    s0.appendChild(drow('Время', fmtClock(entry.t / 1000)));
+    s0.appendChild(drow('Уровень', el('span', { class: 'badge ' + logLevelClass(entry.type), text: logLevelClass(entry.type) })));
+    if (p.ok && p.net) s0.appendChild(drow('Сеть', p.net.toUpperCase()));
+    els.body.appendChild(s0);
+
+    if (p.ok) {
+      var s1 = dsec('Соединение', 'fallback');
+      s1.appendChild(drow('Источник', p.src.host ? (p.src.host + (p.src.port ? ':' + p.src.port : '')) : '—', true));
+      s1.appendChild(drow('Назначение', p.dst.host ? (p.dst.host + (p.dst.port ? ':' + p.dst.port : '')) : '—', true));
+      if (p.dst.port) s1.appendChild(drow('Порт', p.dst.port, true));
+      els.body.appendChild(s1);
+
+      var s2 = dsec('Маршрут', 'proxy');
+      s2.appendChild(drow('Правило', p.rule || '—', false, p.rule));
+      var chain = [];
+      if (p.group) chain.push(p.group);
+      if (p.node) chain.push(p.node);
+      if (chain.length) s2.appendChild(drow('Цепочка', chainChips(chain)));
+      els.body.appendChild(s2);
+
+      var geo = logGeoIp(p);
+      if (geo) {
+        var s3 = dsec('Гео и провайдер', 'global');
+        s3.appendChild(asnBox(geo));
+        els.body.appendChild(s3);
+      }
+    } else {
+      els.body.appendChild(el('div', { class: 'dnote', text: 'В строке нет разметки «откуда --> куда» — показываю её как есть.' }));
+    }
+
+    var s4 = dsec('Строка целиком', 'server');
+    s4.appendChild(el('code', { class: 'dcode', text: entry.text || '' }));
+    els.body.appendChild(s4);
+
+    var copyBtn = el('button', { type: 'button', class: 'btn small', text: 'Копировать строку' });
+    copyBtn.addEventListener('click', function () { copyText(entry.text || '', 'Строка скопирована'); });
+    els.foot.appendChild(copyBtn);
+    els.foot.appendChild(el('button', { type: 'button', class: 'btn small ghost', text: 'Закрыть', onclick: function () { closeDrawer(); } }));
+  }
+
+  /* ---------------------------- подсказка логов --------------------------- */
+
+  function showLogHint() {
+    var hint = $('log-hint');
+    if (!hint) return;
+    clear(hint);
+    hint.appendChild(icoEl('proxy', 'lg'));
+    hint.appendChild(el('div', {}, [
+      el('b', { text: 'Строк нет. Возможно, в mihomo включён log-level: silent. ' }),
+      'Поставьте ', el('code', { text: 'log-level: info' }), ' в ',
+      el('code', { text: '/opt/etc/mihomo/config.yaml' }), ' и перезапустите ядро: ',
+      el('code', { text: 'xkeen -restart' })
+    ]));
+    hint.hidden = false;
+  }
+
+  function hideLogHint() {
+    var hint = $('log-hint');
+    if (hint) hint.hidden = true;
+    if (logHintTimer) { clearTimeout(logHintTimer); logHintTimer = null; }
+  }
+
+  function logHintShown() {
+    var hint = $('log-hint');
+    return !!(hint && !hint.hidden);
+  }
+
+  // EventSource при обрыве повторяет попытки каждые ~3 с, поэтому таймер не
+  // перезапускаем — иначе подсказка не успевала бы показаться.
+  function scheduleLogHint() {
+    if (ui.journal.logs.length) return;
+    if (logHintTimer || logHintShown()) return;
+    logHintTimer = setTimeout(function () {
+      logHintTimer = null;
+      if (ui.view === 'journal' && ui.journal.tab === 'logs' && !ui.journal.logs.length) showLogHint();
+    }, 6000);
   }
 
   /* -------------------------------- ПРАВИЛА ------------------------------ */
@@ -2533,7 +3539,8 @@
     var allEvents = st && Array.isArray(st.events) ? st.events : [];
     var firstT = allEvents.length ? num(allEvents[0] && allEvents[0].t) : 0;
     var lastT = allEvents.length ? num(allEvents[allEvents.length - 1] && allEvents[allEvents.length - 1].t) : 0;
-    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + ui.journal.filter + '|' + (st ? 1 : 0);
+    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + ui.journal.filter + '|' + (st ? 1 : 0) +
+      '|' + (ui.drawer.open && ui.drawer.kind === 'event' ? ui.drawer.key : '');
     if (sig === eventsSig && box.childNodes.length) return;
     eventsSig = sig;
 
@@ -2547,12 +3554,30 @@
     filtered.slice(0, 300).forEach(function (ev) {
       var kind = String(ev.kind || 'info').toLowerCase();
       if (['info', 'warn', 'bad', 'ok'].indexOf(kind) < 0) kind = 'info';
-      box.appendChild(el('div', { class: 'ev ' + kind }, [
+      var key = num(ev.t) + '|' + String(ev.text || '');
+      var selected = ui.drawer.open && ui.drawer.kind === 'event' && ui.drawer.key === key;
+      var row = el('div', {
+        class: 'ev ' + kind + (selected ? ' selected' : ''),
+        role: 'button',
+        tabindex: '0',
+        'aria-label': 'Подробности события: ' + trim(ev.text || '', 60),
+        title: 'Нажмите, чтобы открыть подробности',
+        dataset: { key: key }
+      }, [
         el('span', { class: 'ev-t', text: fmtClock(ev.t), title: fmtTime(ev.t) }),
         el('span', { class: 'ev-kind', text: kind }),
         ev.group ? el('span', { class: 'ev-group', text: ev.group }) : null,
-        el('span', { class: 'ev-text', text: ev.text || '' })
-      ]));
+        el('span', { class: 'ev-text', text: ev.text || '' }),
+        el('span', { class: 'ev-go', text: '›', 'aria-hidden': 'true' })
+      ]);
+      row.addEventListener('click', function () { openDrawer('event', key, ev); });
+      row.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+          e.preventDefault();
+          openDrawer('event', key, ev);
+        }
+      });
+      box.appendChild(row);
     });
     box.scrollTop = keepScroll;
 
@@ -2922,6 +3947,8 @@
     if (def) def.textContent = defaultBase();
     if (input && !ui.settings.inited) input.value = saved ? normBase(saved) : '';
     ui.settings.inited = true;
+    renderThemeCards();
+    renderThemeBadge();
     renderSettingsStatus();
     fillGroupSelect();
     fillWatchdogForm();
@@ -3214,7 +4241,7 @@
       if (!best) { toast('Живых серверов не найдено — переключение отменено', 'bad'); return; }
       await postJson('/api/select', { group: group.name, name: best.name }, 15000);
       group.now = best.name;
-      toast('Переключено на ' + best.name + ' (' + fmtDelay(best.delay) + ')', 'ok', 5000);
+      toast('Переключено на ' + nodeLabel(best.name) + ' (' + fmtDelay(best.delay) + ')', 'ok', 5000);
       pollState();
       if (ui.view === 'servers') renderServers();
     } catch (e) {
@@ -3259,6 +4286,34 @@
 
     var refreshBtn = $('btn-refresh');
     if (refreshBtn) refreshBtn.addEventListener('click', refreshAll);
+
+    var themeBtn = $('btn-theme');
+    if (themeBtn) themeBtn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      setThemeMenu(!themeMenuOpen());
+    });
+    var themeMenuNode = $('theme-menu');
+    if (themeMenuNode) themeMenuNode.addEventListener('click', function (e) { e.stopPropagation(); });
+    document.addEventListener('click', function (e) {
+      if (!themeMenuOpen()) return;
+      if (e.target && e.target.closest && e.target.closest('.theme-wrap')) return;
+      setThemeMenu(false);
+    });
+
+    var drawerCloseBtn = $('drawer-close');
+    if (drawerCloseBtn) drawerCloseBtn.addEventListener('click', function () { closeDrawer(); });
+    var drawerScrimNode = $('drawer-scrim');
+    if (drawerScrimNode) drawerScrimNode.addEventListener('click', function () { closeDrawer(); });
+
+    var logListNode = $('log-list');
+    if (logListNode) {
+      logListNode.addEventListener('click', function (e) {
+        var line = e.target && e.target.closest ? e.target.closest('.log-line') : null;
+        if (!line || !line.__log) return;
+        var item = line.__log;
+        openDrawer('log', String(item.t) + '|' + trim(item.text, 40), item);
+      });
+    }
 
     var bannerRetry = $('banner-retry');
     if (bannerRetry) bannerRetry.addEventListener('click', function () { pollState(true); });
@@ -3436,7 +4491,12 @@
     document.addEventListener('keydown', function (e) {
       var modal = $('modal-root');
       if (modal && !modal.hidden) return;
-      if (e.key === 'Escape') { closeSidebar(); return; }
+      if (e.key === 'Escape') {
+        if (themeMenuOpen()) { setThemeMenu(false); return; }
+        if (ui.drawer.open) { closeDrawer(); return; }
+        closeSidebar();
+        return;
+      }
       var t = e.target || {};
       var tag = (t.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'select' || tag === 'textarea' || t.isContentEditable) return;
@@ -3455,6 +4515,9 @@
   function init() {
     ui.api = normBase(readSavedApi()) || defaultBase();
     ui.pendingSelect = Object.create(null);
+    applyTheme(readThemeMode(), false);
+    watchSystemTheme();
+    applyStaticIcons();
     bindUi();
     initSettings();
     renderTopbar();

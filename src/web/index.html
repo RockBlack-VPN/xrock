@@ -1,15 +1,42 @@
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="ru" data-theme="dark" data-theme-mode="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="color-scheme" content="dark">
-<meta name="theme-color" content="#0b0f14">
+<meta name="color-scheme" content="dark light">
+<meta name="theme-color" id="meta-theme-color" content="#0b0f14">
 <meta name="description" content="xrock — локальная панель управления mihomo на роутере Keenetic">
 <title>xrock — панель mihomo</title>
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="icon" href="logo.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="logo.svg">
+<script>
+/* Тема применяется до первой отрисовки — без вспышки светлой/тёмной.
+   Значение: dark | light | midnight | nord | system (см. app.js). */
+(function () {
+  var THEMES = ['dark', 'light', 'midnight', 'nord'];
+  var mode = 'dark';
+  try {
+    var saved = localStorage.getItem('xrock.theme') || '';
+    if (saved === 'system') {
+      mode = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    } else if (THEMES.indexOf(saved) >= 0) {
+      mode = saved;
+    }
+  } catch (e) { /* приватный режим — тема по умолчанию */ }
+  var root = document.documentElement;
+  root.setAttribute('data-theme', mode);
+  root.setAttribute('data-theme-mode', mode);
+  root.style.colorScheme = mode === 'light' ? 'light' : 'dark';
+  var meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) {
+    meta.setAttribute('content',
+      mode === 'light' ? '#eef2f7' :
+      mode === 'midnight' ? '#050a15' :
+      mode === 'nord' ? '#2e3440' : '#0b0f14');
+  }
+})();
+</script>
 <link rel="stylesheet" href="app.css">
 </head>
 <body>
@@ -77,6 +104,13 @@
           <span class="dot" id="link-dot"></span>
           <span class="link-text" id="link-text">подключение…</span>
         </span>
+        <div class="theme-wrap">
+          <button type="button" class="icon-btn theme-btn" id="btn-theme" title="Тема оформления"
+                  aria-label="Тема оформления" aria-haspopup="true" aria-expanded="false">
+            <span class="sw" aria-hidden="true"></span>
+          </button>
+          <div class="theme-menu" id="theme-menu" role="menu" aria-label="Тема оформления" hidden></div>
+        </div>
         <button type="button" class="icon-btn" id="btn-refresh" title="Обновить данные (R)" aria-label="Обновить">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.4 12a8.4 8.4 0 1 1-2.5-6"/><path d="M18.7 3.2v4.6h-4.6"/></svg>
         </button>
@@ -112,7 +146,7 @@
         <div class="cards">
           <article class="card wide">
             <header class="card-h">
-              <h2>Текущий сервер</h2>
+              <h2 data-ico="server">Текущий сервер</h2>
               <span class="badge" id="cur-badge">—</span>
             </header>
             <div class="card-b" id="cur-body"></div>
@@ -120,7 +154,7 @@
 
           <article class="card">
             <header class="card-h">
-              <h2>Сторож</h2>
+              <h2 data-ico="proxy">Сторож</h2>
               <span class="badge" id="wd-badge-overview">—</span>
             </header>
             <div class="card-b" id="wd-body"></div>
@@ -128,7 +162,7 @@
 
           <article class="card">
             <header class="card-h">
-              <h2>Скорость</h2>
+              <h2 data-ico="fastest">Скорость</h2>
               <span class="badge ok" id="speed-badge">live</span>
             </header>
             <div class="card-b" id="speed-body"></div>
@@ -136,7 +170,7 @@
 
           <article class="card router-card">
             <header class="card-h">
-              <h2>Роутер</h2>
+              <h2 data-ico="router">Роутер</h2>
               <span class="badge" id="router-badge">—</span>
             </header>
             <div class="card-b" id="router-body"></div>
@@ -144,7 +178,7 @@
 
           <article class="card">
             <header class="card-h">
-              <h2>Подписка</h2>
+              <h2 data-ico="global">Подписка</h2>
               <span class="badge" id="sub-badge">—</span>
             </header>
             <div class="card-b" id="sub-body"></div>
@@ -152,7 +186,7 @@
 
           <article class="card">
             <header class="card-h">
-              <h2>Соединения</h2>
+              <h2 data-ico="fallback">Соединения</h2>
               <span class="badge" id="conn-badge">—</span>
             </header>
             <div class="card-b" id="conn-card-body"></div>
@@ -187,7 +221,7 @@
 
         <article class="card dead-card" id="srv-dead-wrap" hidden>
           <header class="card-h">
-            <h2>Мёртвые узлы <span class="badge bad" id="srv-dead-count"></span></h2>
+            <h2 data-ico="reject">Мёртвые узлы <span class="badge bad" id="srv-dead-count"></span></h2>
             <span class="hint">по данным сторожа</span>
           </header>
           <div class="card-b" id="srv-dead"></div>
@@ -278,7 +312,7 @@
 
         <div class="card" id="jrn-events-pane">
           <header class="card-h">
-            <h2>События <span class="badge" id="ev-count"></span></h2>
+            <h2 data-ico="proxy">События <span class="badge" id="ev-count"></span></h2>
             <div class="seg small" id="ev-filters">
               <button type="button" class="seg-btn active" data-filter="all">Все</button>
               <button type="button" class="seg-btn" data-filter="fail">Сбои</button>
@@ -293,7 +327,7 @@
 
         <div class="card" id="jrn-logs-pane" hidden>
           <header class="card-h">
-            <h2>Логи mihomo</h2>
+            <h2 data-ico="server">Логи mihomo</h2>
             <div class="log-tools">
               <select class="input select" id="log-level" aria-label="Уровень логов">
                 <option value="debug">debug</option>
@@ -308,6 +342,7 @@
           <div class="card-b">
             <div class="log-status small" id="log-status">поток не подключён</div>
             <div class="logs" id="log-list"></div>
+            <div class="log-hint" id="log-hint" hidden></div>
           </div>
         </div>
       </section>
@@ -317,8 +352,19 @@
         <div class="view-head"><h1>Настройки</h1></div>
 
         <div class="cards">
+          <article class="card wide" id="theme-card">
+            <header class="card-h">
+              <h2>Оформление</h2>
+              <span class="badge muted" id="theme-badge">тёмная</span>
+            </header>
+            <div class="card-b">
+              <div class="theme-cards" id="theme-cards" role="radiogroup" aria-label="Тема оформления"></div>
+              <p class="hint">Тема применяется сразу и запоминается в этом браузере (<code>localStorage</code>). «Как в системе» — следует теме Windows, macOS или Android.</p>
+            </div>
+          </article>
+
           <article class="card wide">
-            <header class="card-h"><h2>Подключение к демону</h2></header>
+            <header class="card-h"><h2 data-ico="router">Подключение к демону</h2></header>
             <div class="card-b">
               <div class="form-row">
                 <label class="field grow">
@@ -338,7 +384,7 @@
 
           <article class="card wide">
             <header class="card-h">
-              <h2>Сторож</h2>
+              <h2 data-ico="proxy">Сторож</h2>
               <span class="badge" id="wd-badge-settings">—</span>
             </header>
             <div class="card-b">
@@ -371,7 +417,7 @@
 
           <article class="card wide" id="upd-card">
             <header class="card-h">
-              <h2>Обновления</h2>
+              <h2 data-ico="fastest">Обновления</h2>
               <span class="badge" id="upd-badge">—</span>
             </header>
             <div class="card-b">
@@ -419,6 +465,22 @@
   </div>
 
   <div class="scrim" id="scrim" hidden></div>
+  <div class="drawer-root" id="drawer-root" hidden>
+    <div class="drawer-scrim" id="drawer-scrim"></div>
+    <aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-labelledby="drawer-title" tabindex="-1">
+      <header class="drawer-h">
+        <div class="drawer-head-txt">
+          <span class="drawer-kind" id="drawer-kind">Соединение</span>
+          <h2 id="drawer-title">—</h2>
+        </div>
+        <button type="button" class="icon-btn" id="drawer-close" aria-label="Закрыть панель" title="Закрыть (Esc)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+        </button>
+      </header>
+      <div class="drawer-b" id="drawer-body"></div>
+      <footer class="drawer-f" id="drawer-foot"></footer>
+    </aside>
+  </div>
   <div class="toasts" id="toasts" aria-live="polite"></div>
   <div class="modal-root" id="modal-root" hidden></div>
 </div>
