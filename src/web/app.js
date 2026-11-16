@@ -2547,7 +2547,9 @@
       uptimeSec: toNumOrNull(pick(o, ['uptimeSec', 'uptime'])),
       arch: String(pick(o, ['arch']) || ''),
       model: String(pick(o, ['model']) || ''),
-      cores: toNumOrNull(pick(o, ['cores', 'numCpu']))
+      cores: toNumOrNull(pick(o, ['cores', 'numCpu'])),
+      selfRssKb: toNumOrNull(pick(o, ['selfRssKb', 'selfRssKB', 'selfRss'])),
+      mihomoRssKb: toNumOrNull(pick(o, ['mihomoRssKb', 'mihomoRssKB', 'mihomoRss']))
     };
   }
 

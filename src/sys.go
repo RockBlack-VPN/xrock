@@ -239,7 +239,20 @@ func procRssKb(name string) int64 {
 			continue
 		}
 		comm, err := os.ReadFile("/proc/" + pid + "/comm")
-		if err != nil || strings.TrimSpace(string(comm)) != name {
+		match := err == nil && strings.TrimSpace(string(comm)) == name
+		if !match {
+			// обёртки (sh/скрипты xkeen) — смотрим ещё и командную строку
+			if cl, err := os.ReadFile("/proc/" + pid + "/cmdline"); err == nil {
+				args := strings.Split(string(cl), "\x00")
+				for _, a := range args {
+					if strings.Contains(a, name) {
+						match = true
+						break
+					}
+				}
+			}
+		}
+		if !match {
 			continue
 		}
 		b, err := os.ReadFile("/proc/" + pid + "/status")
