@@ -2,12 +2,19 @@
 # Установка xrock на Keenetic/Netcraze с Entware + XKeen (ядро mihomo).
 #   sh install.sh            — установить/обновить
 #   sh install.sh --uninstall — убрать панель (mihomo и его конфиг не трогаем)
+#
+# Панель (UI) больше не «копируется файлами»: в config.yaml прописываются
+#   external-ui: xrock
+#   external-ui-url: https://github.com/RockBlack-VPN/xrock/releases/latest/download/xrock-ui.zip
+# и mihomo сам скачивает/обновляет её — как zashboard. Если GitHub недоступен,
+# установщик упадёт на копию UI из архива (офлайн-запас).
 set -e
 cd "$(dirname "$0")"
 
 MIHOMO_DIR=/opt/etc/mihomo
 CONF="$MIHOMO_DIR/config.yaml"
 UI_DIR="$MIHOMO_DIR/xrock"
+UI_URL="https://github.com/RockBlack-VPN/xrock/releases/latest/download/xrock-ui.zip"
 BIN_DIR=/opt/sbin
 INIT=/opt/etc/init.d/S99xrock
 PORT=9091
@@ -16,8 +23,7 @@ if [ "$1" = "--uninstall" ]; then
   [ -x "$INIT" ] && "$INIT" stop >/dev/null 2>&1 || true
   rm -f "$INIT" "$BIN_DIR/xrock"
   rm -rf "$UI_DIR"
-  echo "xrock удалён. Конфиг mihomo и файл настроек /opt/etc/xrock.json оставлены."
-  echo "Верните в $CONF external-ui: zashboard (если нужен zashboard) и перезапустите: xkeen -restart"
+  echo "xrock удалён. В $CONF остались external-ui/external-ui-url — при необходимости верните zashboard."
   exit 0
 fi
 
@@ -32,7 +38,7 @@ echo "Архитектура: $(uname -m) → $BIN"
 [ -f "$CONF" ] || { echo "Не найден $CONF — сначала установите XKeen с ядром mihomo"; exit 1; }
 [ -x /opt/sbin/mihomo ] || { echo "Не найден mihomo — xrock работает только с ядром mihomo"; exit 1; }
 
-# 1. бинарник
+# 1. бинарник демона
 if [ -f "$BIN" ]; then
   SRC="$BIN"
 elif [ -f "./xrock" ]; then
@@ -44,32 +50,29 @@ fi
 cp "$SRC" "$BIN_DIR/xrock"
 chmod 755 "$BIN_DIR/xrock"
 
-# 2. UI в папку mihomo (external-ui)
-mkdir -p "$UI_DIR"
-cp -r ./web/. "$UI_DIR/"
-
-# 3. конфиг mihomo: external-ui: xrock + secret
+# 2. конфиг mihomo: external-ui: xrock + адрес архива UI (как zashboard)
 BACKUP="$CONF.xrock-backup.$(date +%Y%m%d-%H%M%S)"
 cp "$CONF" "$BACKUP"
 echo "Резервная копия конфига: $BACKUP"
 
-# внешний UI — наша папка, автозагрузку чужого UI отключаем (иначе mihomo
-# перезапишет панель при обновлении)
 if grep -qE '^external-ui:' "$CONF"; then
   sed -i 's|^external-ui:.*|external-ui: xrock|' "$CONF"
 else
   printf 'external-ui: xrock\n' >> "$CONF"
 fi
 if grep -qE '^external-ui-url:' "$CONF"; then
-  sed -i 's|^external-ui-url:|# external-ui-url:|' "$CONF"
+  sed -i "s|^external-ui-url:.*|external-ui-url: $UI_URL|" "$CONF"
+elif grep -qE '^# external-ui-url:' "$CONF"; then
+  sed -i "s|^# external-ui-url:.*|external-ui-url: $UI_URL|" "$CONF"
+else
+  printf 'external-ui-url: %s\n' "$UI_URL" >> "$CONF"
 fi
 
-# secret: если на API нет пароля — генерируем и сообщаем
+# 3. secret: если на API нет пароля — генерируем и сообщаем
 if grep -qE '^secret:[[:space:]]*"?[A-Za-z0-9]' "$CONF"; then
   SECRET=$(sed -n 's/^secret:[[:space:]]*"\{0,1\}\([^"#]*\)"\{0,1\}.*/\1/p' "$CONF" | head -1 | tr -d ' \r')
   echo "Clash API уже с secret — оставляю как есть"
 else
-  # md5sum есть и в BusyBox, и в Entware (od -A в BusyBox отсутствует)
   SECRET=$(head -c 24 /dev/urandom | md5sum | cut -d' ' -f1)
   [ -z "$SECRET" ] && SECRET=$(head -c 24 /dev/urandom | md5sum | cut -c1-32)
   if grep -qE '^secret:' "$CONF"; then
@@ -80,7 +83,7 @@ else
   echo "Придуман пароль к Clash API (secret) — записан в $CONF"
 fi
 
-# 4. init-скрипт
+# 4. init-скрипт демона
 cat > "$INIT" <<EOF
 #!/bin/sh
 ENABLED=yes
@@ -95,10 +98,38 @@ EOF
 chmod 755 "$INIT"
 mkdir -p /opt/var/log
 
-# 5. перезапуск mihomo (применит external-ui и secret) и запуск панели
-echo "Перезапускаю XKeen (mihomo) — связь прервётся на 5–10 секунд…"
+# 5. чистим старую UI, чтобы mihomo скачал свежую по external-ui-url
+if [ -d "$UI_DIR" ]; then
+  rm -rf "$UI_DIR.old"
+  mv "$UI_DIR" "$UI_DIR.old"
+fi
+
+echo "Перезапускаю XKeen (mihomo) — он сам скачает панель по external-ui-url…"
 xkeen -restart || echo "Не удалось перезапустить — выполните: xkeen -restart"
-sleep 2
+
+# 6. ждём, пока mihomo скачает UI; если не вышло — офлайн-запас из архива
+i=0
+UI_OK=0
+while [ $i -lt 30 ]; do
+  sleep 2
+  i=$((i+2))
+  if curl -s -m 3 -o /dev/null "http://127.0.0.1:9090/ui" && [ -f "$UI_DIR/index.html" ]; then
+    UI_OK=1
+    break
+  fi
+done
+if [ "$UI_OK" = "1" ]; then
+  echo "Панель скачана mihomo по external-ui-url"
+  rm -rf "$UI_DIR.old"
+elif [ -d "./web" ]; then
+  echo "GitHub недоступен — ставлю панель из архива (офлайн-запас)"
+  mkdir -p "$UI_DIR"
+  cp -r ./web/. "$UI_DIR/"
+else
+  echo "Внимание: панель не скачалась и нет папки ./web для офлайн-запаса"
+fi
+
+sleep 1
 "$INIT" start
 sleep 1
 
@@ -112,4 +143,4 @@ echo "  Пароль Clash API (secret):     ${SECRET:-НЕ ЗАДАН — пр�
 echo "  Демон xrock:                   http://$LAN_IP:$PORT/api/state"
 echo "  Журнал:                        /opt/var/log/xrock.log"
 echo
-echo "Открывайте панель — она сама подключится к демону на $LAN_IP:$PORT."
+echo "Обновить панель потом: «Настройки → Обновления» или просто перезапуск mihomo."
