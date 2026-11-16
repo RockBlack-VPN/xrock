@@ -2461,6 +2461,26 @@ main#views { padding: 18px; }
 .dev-exit-more .chain-node { font-size: 11px; padding: 2px 6px; }
 .dev-empty { font-size: 11.5px; color: var(--dim); }
 
+/* сортировка таблицы соединений */
+.table th.sortable { cursor: pointer; user-select: none; }
+.table th.sortable:hover { color: var(--txt); background: var(--hover); }
+.table th.sorted { color: var(--accent-txt); }
+.sort-ind {
+  margin-left: 4px;
+  font-size: 9px;
+  opacity: .45;
+  letter-spacing: 0;
+}
+.table th.sorted .sort-ind { opacity: 1; }
+.sort-pick { display: none; margin-left: auto; flex-direction: column; gap: 3px; min-width: 0; }
+.sort-pick-lbl {
+  font-size: 9.5px;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+.sort-pick .select { font-size: 11.5px; padding: 4px 24px 4px 8px; }
+
 /* -------------------- соединения: выбранная строка ---------------------- */
 
 .conn-row { cursor: pointer; }
@@ -2619,6 +2639,9 @@ main#views { padding: 18px; }
   }
   .table td.act::before { display: none; }
   .cell-stack { min-width: 0; }
+
+  .sort-pick { display: flex; flex: 1 1 100%; }
+  .sort-pick .select { width: 100%; font-size: 12.5px; padding: 7px 26px 7px 10px; }
 
   .srv-panel-head { align-items: flex-start; }
   .srv-panel-tools { width: 100%; justify-content: space-between; }

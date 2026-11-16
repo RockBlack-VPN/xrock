@@ -19,10 +19,41 @@ import (
 )
 
 type clash struct {
+	mu     sync.RWMutex // base/secret меняются, если config.yaml переписали
 	base   string
 	secret string
 	hc     *http.Client // обычные запросы, с таймаутом
+	hcFast *http.Client // то, что ждёт UI (state) — без долгих зависаний
 	stream *http.Client // стримы (/traffic, /logs) — без общего таймаута
+}
+
+func (c *clash) baseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.base
+}
+
+func (c *clash) authSecret() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.secret
+}
+
+// setAuth переключает клиент на новый адрес/секрет Clash API. true — если что-то
+// изменилось (тогда кеши прокси надо сбросить).
+func (c *clash) setAuth(api, secret string) bool {
+	if !strings.HasPrefix(api, "http") {
+		api = "http://" + api
+	}
+	api = strings.TrimRight(api, "/")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.base == api && c.secret == secret {
+		return false
+	}
+	c.base = api
+	c.secret = secret
+	return true
 }
 
 func newClash(api, secret string) *clash {
@@ -40,26 +71,36 @@ func newClash(api, secret string) *clash {
 		base:   api,
 		secret: secret,
 		hc:     &http.Client{Transport: tr, Timeout: 12 * time.Second},
+		hcFast: &http.Client{Transport: tr, Timeout: 5 * time.Second},
 		stream: &http.Client{Transport: tr},
 	}
 }
 
 func (c *clash) do(method, path string, body []byte) ([]byte, error) {
+	return c.doWith(c.hc, method, path, body)
+}
+
+// doFast — тот же запрос, но с коротким таймаутом: UI не должен ждать 12 секунд.
+func (c *clash) doFast(method, path string, body []byte) ([]byte, error) {
+	return c.doWith(c.hcFast, method, path, body)
+}
+
+func (c *clash) doWith(client *http.Client, method, path string, body []byte) ([]byte, error) {
 	var rdr io.Reader
 	if body != nil {
 		rdr = bytes.NewReader(body)
 	}
-	req, err := http.NewRequest(method, c.base+path, rdr)
+	req, err := http.NewRequest(method, c.baseURL()+path, rdr)
 	if err != nil {
 		return nil, err
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if c.secret != "" {
-		req.Header.Set("Authorization", "Bearer "+c.secret)
+	if secret := c.authSecret(); secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
 	}
-	resp, err := c.hc.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -86,6 +127,14 @@ func (c *clash) do(method, path string, body []byte) ([]byte, error) {
 
 func (c *clash) get(path string, v any) error {
 	b, err := c.do("GET", path, nil)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(b, v)
+}
+
+func (c *clash) getFast(path string, v any) error {
+	b, err := c.doFast("GET", path, nil)
 	if err != nil {
 		return err
 	}
@@ -203,11 +252,23 @@ func (c *clash) version() (string, error) {
 	return v.Version, nil
 }
 
+// versionFast — проверка связи с коротким таймаутом (для фоновых проверок).
+func (c *clash) versionFast() (string, error) {
+	var v struct {
+		Meta    bool   `json:"meta"`
+		Version string `json:"version"`
+	}
+	if err := c.getFast("/version", &v); err != nil {
+		return "", err
+	}
+	return v.Version, nil
+}
+
 func (c *clash) proxies() (map[string]*proxyItem, error) {
 	var r struct {
 		Proxies map[string]*proxyItem `json:"proxies"`
 	}
-	if err := c.get("/proxies", &r); err != nil {
+	if err := c.getFast("/proxies", &r); err != nil {
 		return nil, err
 	}
 	return r.Proxies, nil
@@ -217,7 +278,7 @@ func (c *clash) providers() (map[string]*providerItem, error) {
 	var r struct {
 		Providers map[string]*providerItem `json:"providers"`
 	}
-	if err := c.get("/providers/proxies", &r); err != nil {
+	if err := c.getFast("/providers/proxies", &r); err != nil {
 		return nil, err
 	}
 	return r.Providers, nil
@@ -372,12 +433,12 @@ func (c *clash) rules() ([]ruleItem, error) {
 
 // streamGet — GET на стрим mihomo; тело читает вызывающий, отмена по ctx.
 func (c *clash) streamGet(ctx context.Context, path string) (io.ReadCloser, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", c.base+path, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.baseURL()+path, nil)
 	if err != nil {
 		return nil, err
 	}
-	if c.secret != "" {
-		req.Header.Set("Authorization", "Bearer "+c.secret)
+	if secret := c.authSecret(); secret != "" {
+		req.Header.Set("Authorization", "Bearer "+secret)
 	}
 	resp, err := c.stream.Do(req)
 	if err != nil {

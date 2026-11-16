@@ -101,6 +101,10 @@ func fail(w http.ResponseWriter, code int, msg string) {
 
 func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 	proxies, err := a.cl.allProxies()
+	if err != nil && a.reloadConf() {
+		// конфиг мог измениться (новый secret/порт) — пробуем ещё раз
+		proxies, err = a.cl.allProxies()
+	}
 	if err != nil {
 		a.setAPIErr(err)
 		fail(w, 502, "mihomo API: "+err.Error())
@@ -111,7 +115,7 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		Groups: []groupResp{}, Proxies: []proxyResp{}, Providers: []providerResp{}, Events: []event{}}
 
 	a.mu.Lock()
-	resp.Mihomo = map[string]any{"version": a.mihomoVer, "api": a.cl.base, "secret": a.cl.secret != ""}
+	resp.Mihomo = map[string]any{"version": a.mihomoVer, "api": a.cl.baseURL(), "secret": a.cl.authSecret() != ""}
 	resp.Stats = a.st.Stats
 	resp.Events = append([]event{}, a.st.Events...)
 	if len(resp.Events) > 80 {

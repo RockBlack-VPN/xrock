@@ -240,6 +240,10 @@
         <div class="toolbar">
           <span class="muted small" id="conn-meta">—</span>
           <span class="chip warn small" id="conn-paused" hidden>⏸ обновление на паузе</span>
+          <label class="sort-pick">
+            <span class="sort-pick-lbl">Сортировка</span>
+            <select class="input select" id="conn-sort" aria-label="Сортировка соединений"></select>
+          </label>
         </div>
 
         <div class="dev-bar" id="conn-dev-bar">
@@ -254,12 +258,12 @@
           <table class="table" id="conn-table">
             <thead>
               <tr>
-                <th>Хост</th>
-                <th>Правило</th>
-                <th>Цепочка</th>
-                <th class="num">↑</th>
-                <th class="num">↓</th>
-                <th class="num">Время</th>
+                <th class="sortable" data-sort="host" scope="col">Хост<span class="sort-ind" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="rule" scope="col">Правило<span class="sort-ind" aria-hidden="true"></span></th>
+                <th class="sortable" data-sort="chain" scope="col">Цепочка<span class="sort-ind" aria-hidden="true"></span></th>
+                <th class="num sortable" data-sort="up" scope="col">↑<span class="sort-ind" aria-hidden="true"></span></th>
+                <th class="num sortable" data-sort="down" scope="col">↓<span class="sort-ind" aria-hidden="true"></span></th>
+                <th class="num sortable" data-sort="time" scope="col">Время<span class="sort-ind" aria-hidden="true"></span></th>
                 <th class="act"></th>
               </tr>
             </thead>

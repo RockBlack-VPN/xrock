@@ -24,9 +24,9 @@
     api: '',
     state: null,
     seen: false,
-    link: { ok: false, err: '', fails: 0, version: '' },
+    link: { ok: false, err: '', fails: 0, version: '', daemonOk: false, daemonVersion: '', probing: false, probedAt: 0 },
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
-    conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '' },
+    conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '', sort: { key: 'time', dir: 'desc' } },
     rules: { list: [], search: '', at: 0, loading: false, err: '' },
     journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
     servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
@@ -388,26 +388,28 @@
     ICON_SET[n] = 1;
   });
 
+  // ВАЖНО: имена групп в mihomo с заглавной буквы («Fallback», «PROXY»),
+  // поэтому все правила регистронезависимые.
   var GROUP_ICON_RULES = [
-    [/user[\s_-]*list/, 'userlist'],
-    [/fallback/, 'fallback'],
-    [/fastest|speed[\s_-]*test|auto[\s_-]*select|url[\s_-]*test/, 'fastest'],
-    [/global/, 'global'],
-    [/direct/, 'direct'],
-    [/reject|block|advert|adblock|\bads\b/, 'reject'],
-    [/youtube|\byt\b/, 'youtube'],
-    [/twitter|^x$|\bx[\s_-]?com/, 'x'],
-    [/discord/, 'discord'],
-    [/steam/, 'steam'],
-    [/twitch/, 'twitch'],
-    [/telegram|\btg\b/, 'telegram'],
-    [/instagram|\big\b/, 'instagram'],
-    [/netflix/, 'netflix'],
-    [/spotify/, 'spotify'],
-    [/github/, 'github'],
-    [/whatsapp/, 'whatsapp'],
-    [/proxy|select|manual|выбор/, 'proxy'],
-    [/router|keenetic|mihomo/, 'router']
+    [/user[\s_-]*list/i, 'userlist'],
+    [/fallback/i, 'fallback'],
+    [/fastest|speed[\s_-]*test|auto[\s_-]*select|url[\s_-]*test/i, 'fastest'],
+    [/global/i, 'global'],
+    [/direct/i, 'direct'],
+    [/reject|block|advert|adblock|\bads\b/i, 'reject'],
+    [/youtube|\byt\b/i, 'youtube'],
+    [/twitter|^x$|\bx[\s_-]?com/i, 'x'],
+    [/discord/i, 'discord'],
+    [/steam/i, 'steam'],
+    [/twitch/i, 'twitch'],
+    [/telegram|\btg\b/i, 'telegram'],
+    [/instagram|\big\b/i, 'instagram'],
+    [/netflix/i, 'netflix'],
+    [/spotify/i, 'spotify'],
+    [/github/i, 'github'],
+    [/whatsapp/i, 'whatsapp'],
+    [/proxy|select|manual|выбор/i, 'proxy'],
+    [/router|keenetic|mihomo/i, 'router']
   ];
 
   function flagCodeFromEmoji(text) {
@@ -906,7 +908,12 @@
       clearTimeout(timer);
     }
     if (!res.ok) {
-      throw new ApiError('HTTP ' + res.status + (text ? ' — ' + trim(text, 180) : ''), path, 'HttpError');
+      // тело ошибки демона — JSON {"error": "..."}; показываем только текст
+      var errText = '';
+      var body = parseJson(text);
+      if (body && typeof body === 'object' && body.error) errText = String(body.error);
+      else if (text) errText = trim(text, 180);
+      throw new ApiError('HTTP ' + res.status + (errText ? ' — ' + trim(errText, 180) : ''), path, 'HttpError');
     }
     if (!text) return {};
     var data = parseJson(text);
@@ -979,7 +986,8 @@
     var chipDaemon = $('chip-daemon');
     var chipMihomo = $('chip-mihomo');
     if (chipDaemon) {
-      chipDaemon.textContent = st ? 'демон ' + (st.version || '—') : 'демон —';
+      var daemonVer = st ? (st.version || '—') : (ui.link.daemonOk ? (ui.link.daemonVersion || '?') : '—');
+      chipDaemon.textContent = 'демон ' + daemonVer;
       chipDaemon.title = 'Версия демона xrock';
     }
     if (chipMihomo) {
@@ -1018,8 +1026,8 @@
     } else {
       linkEl.className = 'link-state bad';
       var errText = ui.link.err || 'нет ответа';
-      $('link-text').textContent = /^нет/i.test(errText) ? errText : ('нет связи: ' + errText);
-      linkEl.title = (ui.link.err || 'демон недоступен') + '\n' + ui.api;
+      $('link-text').textContent = ui.link.daemonOk ? 'mihomo не отвечает' : (/^нет/i.test(errText) ? errText : ('нет связи: ' + errText));
+      linkEl.title = (ui.link.daemonOk ? 'демон xrock на связи, mihomo: ' : '') + (ui.link.err || 'демон недоступен') + '\n' + ui.api;
     }
   }
 
@@ -1029,6 +1037,50 @@
     $('banner-title').textContent = title;
     $('banner-detail').textContent = detail;
     b.hidden = false;
+  }
+
+  // Демон может быть жив, а mihomo — нет: /api/ping не трогает Clash API,
+  // поэтому по нему видно, кто именно не отвечает.
+  async function probeDaemon() {
+    if (ui.link.probing) return;
+    if (Date.now() - (ui.link.probedAt || 0) < 8000) return;
+    ui.link.probing = true;
+    ui.link.probedAt = Date.now();
+    try {
+      var r = await apiJson('/api/ping', null, 4000);
+      ui.link.daemonOk = true;
+      ui.link.daemonVersion = r && r.version ? String(r.version) : '';
+    } catch (e) {
+      ui.link.daemonOk = false;
+      ui.link.daemonVersion = '';
+    } finally {
+      ui.link.probing = false;
+      renderTopbar();
+      if (!ui.link.ok) renderBanner();
+    }
+  }
+
+  function renderBanner() {
+    var b = $('banner');
+    if (!b) return;
+    if (ui.link.ok) { b.hidden = true; return; }
+    var extra = '';
+    if (location.protocol === 'https:' && /^http:/i.test(ui.api)) {
+      extra = ' Панель открыта по HTTPS, а демон отвечает по HTTP — браузер блокирует такие запросы (mixed content). Укажите https-адрес или откройте панель по http.';
+    }
+    if (ui.link.daemonOk) {
+      showBanner(
+        'mihomo не отвечает',
+        'Демон xrock ' + (ui.link.daemonVersion || '') + ' на связи (' + ui.api + '), но состояние получить не удалось: ' +
+        (ui.link.err || 'таймаут') + '. Проверьте Clash API в config.yaml (external-controller, secret) — панель переподключится сама.' + extra
+      );
+      return;
+    }
+    showBanner(
+      'Демон недоступен',
+      'Адрес: ' + ui.api + ' — ' + (ui.link.err || 'нет ответа') + '.' + extra +
+      (ui.seen ? ' Показаны последние полученные данные.' : ' Данных ещё нет — проверьте адрес в настройках.')
+    );
   }
 
   function hideBanner() {
@@ -1041,17 +1093,8 @@
     ui.link.ok = false;
     ui.link.err = friendlyError(e);
     renderTopbar();
-    if (ui.link.fails >= 2 || !ui.seen) {
-      var extra = '';
-      if (location.protocol === 'https:' && /^http:/i.test(ui.api)) {
-        extra = ' Панель открыта по HTTPS, а демон отвечает по HTTP — браузер блокирует такие запросы (mixed content). Укажите https-адрес или откройте панель по http.';
-      }
-      showBanner(
-        'Демон недоступен',
-        'Адрес: ' + ui.api + ' — ' + ui.link.err + '.' + extra +
-        (ui.seen ? ' Показаны последние полученные данные.' : ' Данных ещё нет — проверьте адрес в настройках.')
-      );
-    }
+    probeDaemon();
+    if (ui.link.fails >= 2 || !ui.seen) renderBanner();
   }
 
   function onLinkOk(version) {
@@ -1059,6 +1102,8 @@
     ui.link.ok = true;
     ui.link.err = '';
     ui.link.fails = 0;
+    ui.link.daemonOk = true;
+    if (version) ui.link.daemonVersion = String(version);
     if (version) ui.link.version = version;
     if (wasBad) {
       hideBanner();
@@ -2934,6 +2979,65 @@
     }
   }
 
+  /* ------------------------- сортировка соединений ------------------------ */
+
+  var CONN_SORT_DEFAULT_DIR = { time: 'desc', down: 'desc', up: 'desc', host: 'asc', rule: 'asc', chain: 'asc' };
+
+  function connComparator(a, b) {
+    var sort = (ui.conns.sort && ui.conns.sort.key) ? ui.conns.sort : { key: 'time', dir: 'desc' };
+    var r = 0;
+    if (sort.key === 'host') r = String(a.host || '').localeCompare(String(b.host || ''), 'ru');
+    else if (sort.key === 'rule') r = String(a.rule || '').localeCompare(String(b.rule || ''), 'ru');
+    else if (sort.key === 'chain') r = String(a.chain || '').localeCompare(String(b.chain || ''), 'ru');
+    else if (sort.key === 'up') r = (a.up || 0) - (b.up || 0);
+    else if (sort.key === 'down') r = (a.down || 0) - (b.down || 0);
+    else r = (a.start || 0) - (b.start || 0);
+    if (r === 0) r = (a.start || 0) - (b.start || 0);
+    return sort.dir === 'asc' ? r : -r;
+  }
+
+  function setConnSort(key, dir) {
+    if (!key) return;
+    var cur = ui.conns.sort || { key: 'time', dir: 'desc' };
+    var nextDir = dir || (cur.key === key ? (cur.dir === 'asc' ? 'desc' : 'asc') : (CONN_SORT_DEFAULT_DIR[key] || 'desc'));
+    ui.conns.sort = { key: key, dir: nextDir };
+    renderConnections();
+  }
+
+  function renderConnSortUi() {
+    var sort = (ui.conns.sort && ui.conns.sort.key) ? ui.conns.sort : { key: 'time', dir: 'desc' };
+    var ths = document.querySelectorAll('#conn-table thead th[data-sort]');
+    for (var i = 0; i < ths.length; i++) {
+      var th = ths[i];
+      var on = th.getAttribute('data-sort') === sort.key;
+      th.classList.toggle('sorted', on);
+      th.setAttribute('aria-sort', on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+      var ind = th.querySelector('.sort-ind');
+      if (ind) ind.textContent = on ? (sort.dir === 'asc' ? '↑' : '↓') : '↕';
+    }
+    var sel = $('conn-sort');
+    if (!sel) return;
+    if (!sel.options.length) {
+      [
+        ['time:desc', 'Время · сначала новые'],
+        ['down:desc', 'Скачано · больше сверху'],
+        ['up:desc', 'Отдано · больше сверху'],
+        ['host:asc', 'Хост · А–Я'],
+        ['rule:asc', 'Правило · А–Я'],
+        ['chain:asc', 'Цепочка · А–Я']
+      ].forEach(function (o) {
+        sel.appendChild(el('option', { value: o[0], text: o[1] }));
+      });
+    }
+    var want = sort.key + ':' + sort.dir;
+    var has = false;
+    for (var k = 0; k < sel.options.length; k++) {
+      if (sel.options[k].value === want) has = true;
+    }
+    if (!has) want = sort.key + ':' + (CONN_SORT_DEFAULT_DIR[sort.key] || 'desc');
+    if (sel.value !== want) sel.value = want;
+  }
+
   function renderConnections() {
     var body = $('conn-body');
     if (!body) return;
@@ -2943,9 +3047,11 @@
     var dev = ui.conns.device || '';
     var all = ui.conns.list;
     var devTotal = dev ? all.filter(function (c) { return c.srcIp === dev; }).length : all.length;
-    var list = all.slice().sort(function (a, b) { return b.start - a.start; });
+    var list = all.slice();
     if (dev) list = list.filter(function (c) { return c.srcIp === dev; });
     if (q) list = list.filter(function (c) { return connMatches(c, q); });
+    list.sort(connComparator);
+    renderConnSortUi();
 
     renderDeviceBar(connDeviceStats());
 
@@ -4532,6 +4638,7 @@
     ui.conns.down = 0;
     ui.conns.err = '';
     ui.conns.device = '';
+    ui.conns.sort = { key: 'time', dir: 'desc' };
     devSig = '';
     devCountsSig = '';
     ui.rules.list = [];
@@ -4766,6 +4873,17 @@
     if (connSearch) connSearch.addEventListener('input', function () {
       ui.conns.search = connSearch.value;
       renderConnections();
+    });
+    var connSortSel = $('conn-sort');
+    if (connSortSel) connSortSel.addEventListener('change', function () {
+      var parts = String(connSortSel.value || '').split(':');
+      if (parts.length === 2) setConnSort(parts[0], parts[1] === 'asc' ? 'asc' : 'desc');
+    });
+    var connThead = document.querySelector('#conn-table thead');
+    if (connThead) connThead.addEventListener('click', function (e) {
+      var th = e.target && e.target.closest ? e.target.closest('th[data-sort]') : null;
+      if (!th) return;
+      setConnSort(th.getAttribute('data-sort'));
     });
     var connDevice = $('conn-device');
     if (connDevice) connDevice.addEventListener('change', function () {
