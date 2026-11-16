@@ -33,6 +33,9 @@ type sysInfo struct {
 	Arch       string       `json:"arch"`
 	Model      string       `json:"model"`
 	Cores      int          `json:"cores"`
+	// сколько памяти занимают сами процессы (кБ) — чтобы «62%» не путали с панелью
+	SelfRssKb   int64 `json:"selfRssKb"`
+	MihomoRssKb int64 `json:"mihomoRssKb"`
 }
 
 var (
@@ -199,6 +202,9 @@ func (a *app) handleSys(w http.ResponseWriter, r *http.Request) {
 	cpuPrevIdle, cpuPrevTotal = idle, total
 	cpuMu.Unlock()
 
+	info.SelfRssKb = procRssKb("xrock")
+	info.MihomoRssKb = procRssKb("mihomo")
+
 	totalKb, availKb := readMem()
 	info.MemTotal = totalKb
 	info.MemAvail = availKb
@@ -216,6 +222,42 @@ func (a *app) handleSys(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, info)
+}
+
+// procRssKb — RSS процесса по имени (comm) из /proc/<pid>/status.
+func procRssKb(name string) int64 {
+	ents, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+	for _, e := range ents {
+		if !e.IsDir() {
+			continue
+		}
+		pid := e.Name()
+		if pid == "" || pid[0] < '0' || pid[0] > '9' {
+			continue
+		}
+		comm, err := os.ReadFile("/proc/" + pid + "/comm")
+		if err != nil || strings.TrimSpace(string(comm)) != name {
+			continue
+		}
+		b, err := os.ReadFile("/proc/" + pid + "/status")
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			if !strings.HasPrefix(line, "VmRSS:") {
+				continue
+			}
+			f := strings.Fields(line)
+			if len(f) >= 2 {
+				v, _ := strconv.ParseInt(f[1], 10, 64)
+				return v
+			}
+		}
+	}
+	return 0
 }
 
 // sysLoop — раз в 5 секунд снимает CPU-тики, чтобы первый ответ /api/sys уже

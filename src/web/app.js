@@ -1247,6 +1247,8 @@
     'uptime': 'uptime',
     'load average': 'load average',
     'Память': 'Memory',
+    'панель xrock': 'xrock panel',
+    'ядро mihomo': 'mihomo core',
     'Ядра и архитектура': 'Cores & arch',
     'Модель': 'Model',
     'Узлов': 'Nodes',
@@ -2658,8 +2660,12 @@
     var hw = [];
     if (d.cores !== null) hw.push(d.cores + ' ' + plural(d.cores, ['ядро', 'ядра', 'ядер']));
     if (d.arch) hw.push(d.arch);
+    var selfRss = num(d.selfRssKb) > 0 ? fmtBytes(num(d.selfRssKb) * 1024) : '—';
+    var coreRss = num(d.mihomoRssKb) > 0 ? fmtBytes(num(d.mihomoRssKb) * 1024) : '—';
     body.appendChild(el('div', { class: 'kv' }, [
-      kvRow('Память', memText, 'занято / всего'),
+      kvRow('Память', memText, 'Вся система: занято / всего (MemTotal − MemAvailable)'),
+      kvRow('панель xrock', selfRss, 'Сколько памяти занимает сам демон xrock (VmRSS)'),
+      kvRow('ядро mihomo', coreRss, 'Сколько памяти занимает процесс mihomo (VmRSS)'),
       kvRow('Ядра и архитектура', hw.length ? hw.join(' · ') : '—'),
       kvRow('Модель', d.model || '—')
     ]));
