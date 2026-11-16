@@ -2382,6 +2382,12 @@
       list.appendChild(item);
     });
     body.appendChild(list);
+    body.appendChild(el('div', { class: 'row' }, [
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        onclick: function () { activate('subscription'); }
+      }, 'Открыть подписку')
+    ]));
     var b0 = expireBadge(worstDays);
     setBadge($('sub-badge'), b0.cls, worstDays === null ? providers.length + ' шт.' : b0.text);
   }
@@ -2512,13 +2518,29 @@
     }, label);
   }
 
+  // Порядок вкладок: сначала основные группы, потом все остальные по алфавиту.
+  var GROUP_ORDER = ['PROXY', 'FALLBACK', 'FASTEST', 'GLOBAL'];
+
+  function groupPriority(name) {
+    var i = GROUP_ORDER.indexOf(String(name || '').toUpperCase());
+    return i < 0 ? GROUP_ORDER.length : i;
+  }
+
+  function sortGroups(list) {
+    return (list || []).slice().sort(function (a, b) {
+      var pa = groupPriority(a && a.name), pb = groupPriority(b && b.name);
+      if (pa !== pb) return pa - pb;
+      return String((a && a.name) || '').localeCompare(String((b && b.name) || ''), 'ru');
+    });
+  }
+
   function renderGroupTabs(st) {
     var box = $('srv-tabs');
     if (!box) return;
     clear(box);
     if (!st) return;
     var activeName = ui.servers.group;
-    var groups = (st.groups || []).filter(function (g) { return g && g.name; });
+    var groups = sortGroups((st.groups || []).filter(function (g) { return g && g.name; }));
     groups.forEach(function (g) {
       var active = g.name === activeName;
       var nodes = groupNodeCount(g);
