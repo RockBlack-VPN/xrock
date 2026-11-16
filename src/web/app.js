@@ -1,0 +1,2661 @@
+/* ==========================================================================
+   xrock — панель управления mihomo (Keenetic)
+   Чистый JS без зависимостей: fetch + EventSource + DOM.
+   Никаких внешних запросов: только адрес демона (по умолчанию :9091).
+   ========================================================================== */
+(function () {
+  'use strict';
+
+  var API_KEY = 'xrock.api';
+  var POLL_MS = 2500;          // опрос /api/state
+  var CONN_MS = 2000;          // автообновление соединений
+  var TEST_TIMEOUT = 120000;   // проксированный замер может быть долгим
+  var VIEWS = ['overview', 'servers', 'connections', 'rules', 'subscription', 'journal', 'settings'];
+
+  /* ------------------------------ состояние ------------------------------ */
+
+  var ui = {
+    view: 'overview',
+    api: '',
+    state: null,
+    seen: false,
+    link: { ok: false, err: '', fails: 0, version: '' },
+    traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
+    conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '' },
+    rules: { list: [], search: '', at: 0, loading: false, err: '' },
+    journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
+    servers: { autoTested: false, search: '', testing: false },
+    settings: { dirty: false, targetsDirty: false, inited: false },
+    pendingSelect: Object.create(null)
+  };
+
+  var delay = {
+    map: Object.create(null),       // имя -> {delay, err, t}
+    testing: Object.create(null),   // имя -> true, пока идёт замер
+    running: false,
+    startedAt: 0,
+    total: 0,
+    lastAuto: 0
+  };
+
+  var timers = { poll: null, conns: null };
+  var streams = { traffic: null, logs: null, logLevel: '' };
+  var pollPromise = null;
+  var wdTargetsSig = '';
+  var wdGroupsSig = '';
+  var delayRev = 0;
+  var serversSig = null;
+  var rulesSig = '';
+  var eventsSig = '';
+
+  /* ------------------------------- утилиты ------------------------------- */
+
+  function $(id) { return document.getElementById(id); }
+
+  function clear(node) {
+    if (!node) return;
+    while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  function appendKids(parent, kids) {
+    if (kids === null || kids === undefined || kids === false) return;
+    if (Array.isArray(kids)) {
+      for (var i = 0; i < kids.length; i++) appendKids(parent, kids[i]);
+      return;
+    }
+    if (kids instanceof Node) { parent.appendChild(kids); return; }
+    parent.appendChild(document.createTextNode(String(kids)));
+  }
+
+  function el(tag, attrs, kids) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (!Object.prototype.hasOwnProperty.call(attrs, k)) continue;
+        var v = attrs[k];
+        if (v === null || v === undefined || v === false) continue;
+        if (k === 'class') node.className = v;
+        else if (k === 'text') node.textContent = v;
+        else if (k === 'dataset') { for (var d in v) { if (Object.prototype.hasOwnProperty.call(v, d)) node.dataset[d] = v[d]; } }
+        else if (k.length > 2 && k.slice(0, 2) === 'on' && typeof v === 'function') {
+          node.addEventListener(k.slice(2).toLowerCase(), v);
+        } else if (v === true) node.setAttribute(k, '');
+        else node.setAttribute(k, String(v));
+      }
+    }
+    appendKids(node, kids);
+    return node;
+  }
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVG_NS, tag);
+    if (attrs) {
+      for (var k in attrs) {
+        if (Object.prototype.hasOwnProperty.call(attrs, k)) node.setAttribute(k, String(attrs[k]));
+      }
+    }
+    return node;
+  }
+
+  function num(v) {
+    var n = Number(v);
+    return isFinite(n) ? n : 0;
+  }
+
+  function trim(s, n) {
+    s = String(s === null || s === undefined ? '' : s);
+    return s.length > n ? s.slice(0, n - 1) + '…' : s;
+  }
+
+  function parseJson(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+
+  // Чтение поля без учёта регистра: демон может отдавать и camelCase, и PascalCase.
+  function pick(obj, keys) {
+    if (!obj || typeof obj !== 'object') return undefined;
+    for (var i = 0; i < keys.length; i++) {
+      var v = obj[keys[i]];
+      if (v !== undefined && v !== null) return v;
+    }
+    var lower = Object.create(null);
+    for (var k in obj) {
+      if (Object.prototype.hasOwnProperty.call(obj, k)) lower[k.toLowerCase()] = obj[k];
+    }
+    for (var j = 0; j < keys.length; j++) {
+      var lv = lower[keys[j].toLowerCase()];
+      if (lv !== undefined && lv !== null) return lv;
+    }
+    return undefined;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : String(n); }
+
+  var BYTES = ['Б', 'КБ', 'МБ', 'ГБ', 'ТБ', 'ПБ'];
+  function fmtBytes(n, forceDigits) {
+    n = num(n);
+    if (n <= 0) return '0 Б';
+    var i = 0, v = n;
+    while (v >= 1024 && i < BYTES.length - 1) { v /= 1024; i++; }
+    var digits;
+    if (forceDigits !== undefined) digits = i === 0 ? 0 : forceDigits;
+    else digits = i === 0 ? 0 : (v < 10 ? 2 : v < 100 ? 1 : 0);
+    return v.toFixed(digits).replace('.', ',') + ' ' + BYTES[i];
+  }
+
+  function fmtSpeed(n) { return fmtBytes(n) + '/с'; }
+
+  function fmtTime(unix) {
+    if (!unix) return '—';
+    var d = new Date(num(unix) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear() +
+      ' ' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
+  }
+
+  function fmtClock(unix) {
+    if (!unix) return '—';
+    var d = new Date(num(unix) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    return pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds());
+  }
+
+  function agoText(seconds) {
+    seconds = Math.max(0, Math.floor(num(seconds)));
+    if (seconds < 5) return 'только что';
+    if (seconds < 60) return seconds + ' с';
+    if (seconds < 3600) return Math.floor(seconds / 60) + ' мин';
+    if (seconds < 86400) return Math.floor(seconds / 3600) + ' ч';
+    return Math.floor(seconds / 86400) + ' дн';
+  }
+
+  function fmtAgo(unix) {
+    if (!unix) return '—';
+    var diff = Math.floor(Date.now() / 1000) - num(unix);
+    if (diff < 5) return 'только что';
+    return agoText(diff) + ' назад';
+  }
+
+  function fmtDur(seconds) {
+    seconds = Math.max(0, Math.floor(num(seconds)));
+    var h = Math.floor(seconds / 3600);
+    var m = Math.floor((seconds % 3600) / 60);
+    var s = seconds % 60;
+    return h ? h + ':' + pad2(m) + ':' + pad2(s) : m + ':' + pad2(s);
+  }
+
+  function plural(n, forms) {
+    var a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return forms[2];
+    if (b > 1 && b < 5) return forms[1];
+    if (b === 1) return forms[0];
+    return forms[2];
+  }
+
+  function fmtDelay(ms) { return Math.round(num(ms)) + ' мс'; }
+
+  function delayClass(ms) {
+    ms = num(ms);
+    if (ms <= 0) return 'unknown';
+    if (ms < 150) return 'good';
+    if (ms < 400) return 'mid';
+    return 'bad';
+  }
+
+  function normBase(value) {
+    var v = String(value || '').trim();
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+    return v.replace(/\/+$/, '');
+  }
+
+  function defaultBase() {
+    if (location.protocol === 'http:' || location.protocol === 'https:') {
+      if (location.port === '9091') return location.protocol + '//' + location.host;
+    }
+    var host = location.hostname || '127.0.0.1';
+    if (host.indexOf(':') >= 0 && host.charAt(0) !== '[') host = '[' + host + ']';
+    return 'http://' + host + ':9091';
+  }
+
+  function readSavedApi() {
+    try { return localStorage.getItem(API_KEY) || ''; } catch (e) { return ''; }
+  }
+
+  function saveApi(value) {
+    try {
+      if (value) localStorage.setItem(API_KEY, value);
+      else localStorage.removeItem(API_KEY);
+    } catch (e) { /* режим приватного просмотра — просто работаем без сохранения */ }
+  }
+
+  /* --------------------------------- API --------------------------------- */
+
+  function ApiError(message, path, name) {
+    this.name = name || 'ApiError';
+    this.message = message;
+    this.path = path || '';
+    if (Error.captureStackTrace) Error.captureStackTrace(this, ApiError);
+  }
+  ApiError.prototype = Object.create(Error.prototype);
+  ApiError.prototype.constructor = ApiError;
+
+  function friendlyError(e) {
+    if (!e) return 'неизвестная ошибка';
+    if (e.name === 'AbortError') return 'таймаут запроса';
+    var m = String(e.message || e);
+    if (/Failed to fetch|NetworkError|Load failed|Network request failed/i.test(m)) {
+      return 'нет связи (сеть или CORS)';
+    }    return m;
+  }
+
+  async function apiJson(path, options, timeoutMs) {
+    var ms = timeoutMs || 9000;
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, ms);
+    var res, text;
+    try {
+      res = await fetch(ui.api + path, Object.assign({
+        method: 'GET',
+        signal: ctrl.signal,
+        cache: 'no-store',
+        mode: 'cors',
+        credentials: 'omit',
+        headers: { 'Accept': 'application/json' }
+      }, options || {}));
+      text = await res.text();
+    } catch (e) {
+      var msg = (e && e.name === 'AbortError')
+        ? 'таймаут запроса (' + Math.round(ms / 1000) + ' с)'
+        : friendlyError(e);
+      throw new ApiError(msg, path);
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      throw new ApiError('HTTP ' + res.status + (text ? ' — ' + trim(text, 180) : ''), path, 'HttpError');
+    }
+    if (!text) return {};
+    var data = parseJson(text);
+    if (data === null) throw new ApiError('демон вернул некорректный JSON', path, 'ParseError');
+    return data;
+  }
+
+  function postJson(path, body, timeoutMs) {
+    return apiJson(path, {
+      method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    }, timeoutMs);
+  }
+
+  /* --------------------------- связь и индикаторы ------------------------ */
+
+  function setBusy(btn, busy, label) {
+    if (!btn) return;
+    if (busy) {
+      if (!btn.dataset.idleLabel) btn.dataset.idleLabel = btn.textContent.trim();
+      btn.disabled = true;
+      btn.setAttribute('aria-busy', 'true');
+      if (label !== undefined && label !== null && !btn.querySelector('svg')) btn.textContent = label;
+    } else {
+      btn.disabled = false;
+      btn.removeAttribute('aria-busy');
+      if (label !== undefined && label !== null && btn.dataset.idleLabel && !btn.querySelector('svg')) {
+        btn.textContent = btn.dataset.idleLabel;
+      }
+    }
+  }
+
+  function renderTopbar() {
+    var st = ui.state;
+    var chipDaemon = $('chip-daemon');
+    var chipMihomo = $('chip-mihomo');
+    if (chipDaemon) {
+      chipDaemon.textContent = st ? 'демон ' + (st.version || '—') : 'демон —';
+      chipDaemon.title = 'Версия демона xrock';
+    }
+    if (chipMihomo) {
+      clear(chipMihomo);
+      if (st && st.mihomo) {
+        chipMihomo.appendChild(document.createTextNode('mihomo ' + (st.mihomo.version || '—')));
+        if (st.mihomo.api) {
+          chipMihomo.appendChild(el('span', {
+            class: 'mihomo-api',
+            text: ' · ' + String(st.mihomo.api).replace(/^https?:\/\//, '')
+          }));
+        }
+        if (st.mihomo.secret) chipMihomo.appendChild(el('span', { class: 'mihomo-secret', text: ' · ключ' }));
+        chipMihomo.title = 'Clash API: ' + (st.mihomo.api || '—') + (st.mihomo.secret ? ' (с secret)' : '');
+      } else {
+        chipMihomo.textContent = 'mihomo —';
+        chipMihomo.title = '';
+      }
+    }
+    var sideApi = $('side-api');
+    if (sideApi) {
+      sideApi.textContent = ui.api.replace(/^https?:\/\//, '');
+      sideApi.title = ui.api;
+    }
+    var sideMihomo = $('side-mihomo');
+    if (sideMihomo) sideMihomo.textContent = st && st.mihomo ? (st.mihomo.version || '—') : '—';
+
+    var linkEl = $('link-state');
+    if (!linkEl) return;
+    if (ui.link.ok) {
+      linkEl.className = 'link-state ok';
+      $('link-text').textContent = 'демон на связи';
+      linkEl.title = 'Демон ' + (ui.link.version || '') + ' · ' + ui.api;
+    } else {
+      linkEl.className = 'link-state bad';
+      var errText = ui.link.err || 'нет ответа';
+      $('link-text').textContent = /^нет/i.test(errText) ? errText : ('нет связи: ' + errText);
+      linkEl.title = (ui.link.err || 'демон недоступен') + '\n' + ui.api;
+    }
+  }
+
+  function showBanner(title, detail) {
+    var b = $('banner');
+    if (!b) return;
+    $('banner-title').textContent = title;
+    $('banner-detail').textContent = detail;
+    b.hidden = false;
+  }
+
+  function hideBanner() {
+    var b = $('banner');
+    if (b) b.hidden = true;
+  }
+
+  function onLinkFail(e) {
+    ui.link.fails++;
+    ui.link.ok = false;
+    ui.link.err = friendlyError(e);
+    renderTopbar();
+    if (ui.link.fails >= 2 || !ui.seen) {
+      var extra = '';
+      if (location.protocol === 'https:' && /^http:/i.test(ui.api)) {
+        extra = ' Панель открыта по HTTPS, а демон отвечает по HTTP — браузер блокирует такие запросы (mixed content). Укажите https-адрес или откройте панель по http.';
+      }
+      showBanner(
+        'Демон недоступен',
+        'Адрес: ' + ui.api + ' — ' + ui.link.err + '.' + extra +
+        (ui.seen ? ' Показаны последние полученные данные.' : ' Данных ещё нет — проверьте адрес в настройках.')
+      );
+    }
+  }
+
+  function onLinkOk(version) {
+    var wasBad = !ui.link.ok && ui.link.fails > 0;
+    ui.link.ok = true;
+    ui.link.err = '';
+    ui.link.fails = 0;
+    if (version) ui.link.version = version;
+    if (wasBad) {
+      hideBanner();
+      toast('Связь с демоном восстановлена', 'ok', 3000);
+      if (!streams.traffic && !document.hidden) startTrafficStream();
+    }
+    renderTopbar();
+  }
+
+  /* ------------------------------ toast/modal ---------------------------- */
+
+  function toast(message, kind, ms) {
+    var box = $('toasts');
+    if (!box) return;
+    var t = el('div', { class: 'toast ' + (kind || ''), role: 'status' }, message);
+    box.appendChild(t);
+    setTimeout(function () {
+      t.style.transition = 'opacity .2s, transform .2s';
+      t.style.opacity = '0';
+      t.style.transform = 'translateY(5px)';
+      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 230);
+    }, ms || 4200);
+  }
+
+  function confirmDialog(opts) {
+    opts = opts || {};
+    return new Promise(function (resolve) {
+      var root = $('modal-root');
+      if (!root) { resolve(false); return; }
+      var prevFocus = document.activeElement;
+      clear(root);
+      root.hidden = false;
+
+      var okBtn = el('button', {
+        type: 'button',
+        class: 'btn ' + (opts.danger ? 'danger' : 'primary'),
+        text: opts.okLabel || 'OK'
+      });
+      var cancelBtn = el('button', { type: 'button', class: 'btn ghost', text: opts.cancelLabel || 'Отмена' });
+
+      root.appendChild(el('div', { class: 'modal', role: 'dialog', 'aria-modal': 'true' }, [
+        el('h3', { text: opts.title || 'Подтверждение' }),
+        el('p', { text: opts.text || '' }),
+        el('div', { class: 'modal-actions' }, [cancelBtn, okBtn])
+      ]));
+
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); done(false); }
+        else if (e.key === 'Enter') { e.preventDefault(); done(true); }
+      }
+      function onRootClick(e) { if (e.target === root) done(false); }
+      function done(value) {
+        document.removeEventListener('keydown', onKey);
+        root.removeEventListener('click', onRootClick);
+        root.hidden = true;
+        clear(root);
+        resolve(value);
+        if (prevFocus && typeof prevFocus.focus === 'function') {
+          try { prevFocus.focus(); } catch (e) { /* ignore */ }
+        }
+      }
+      okBtn.addEventListener('click', function () { done(true); });
+      cancelBtn.addEventListener('click', function () { done(false); });
+      document.addEventListener('keydown', onKey);
+      root.addEventListener('click', onRootClick);
+      setTimeout(function () { try { okBtn.focus(); } catch (e) { /* ignore */ } }, 0);
+    });
+  }
+
+  /* ----------------------------- нормализация ---------------------------- */
+
+  function normState(raw) {
+    var s = raw && typeof raw === 'object' ? raw : {};
+    s.groups = Array.isArray(s.groups) ? s.groups : [];
+    s.proxies = Array.isArray(s.proxies) ? s.proxies : [];
+    s.providers = Array.isArray(s.providers) ? s.providers : [];
+    s.events = Array.isArray(s.events) ? s.events : [];
+    s.watchdog = s.watchdog && typeof s.watchdog === 'object' ? s.watchdog : {};
+    s.watchdog.dead = Array.isArray(s.watchdog.dead) ? s.watchdog.dead : [];
+    s.watchdog.targets = Array.isArray(s.watchdog.targets) ? s.watchdog.targets : [];
+    s.stats = s.stats && typeof s.stats === 'object' ? s.stats : {};
+    s.traffic = s.traffic && typeof s.traffic === 'object' ? s.traffic : {};
+    if (s.watchdog.lastCheck && !Array.isArray(s.watchdog.lastCheck.results)) {
+      s.watchdog.lastCheck.results = [];
+    }
+    return s;
+  }
+
+  function groupByName(name) {
+    if (!ui.state) return null;
+    for (var i = 0; i < ui.state.groups.length; i++) {
+      if (ui.state.groups[i] && ui.state.groups[i].name === name) return ui.state.groups[i];
+    }
+    return null;
+  }
+
+  function proxyByName(name) {
+    if (!ui.state) return null;
+    for (var i = 0; i < ui.state.proxies.length; i++) {
+      if (ui.state.proxies[i] && ui.state.proxies[i].name === name) return ui.state.proxies[i];
+    }
+    return null;
+  }
+
+  function isGroupName(name) { return !!groupByName(name); }
+
+  // цепочка «группа → подгруппа → узел»
+  function activeChain(name) {
+    var out = [], seen = Object.create(null), cur = name;
+    for (var guard = 0; guard < 10 && cur; guard++) {
+      if (seen[cur]) break;
+      seen[cur] = 1;
+      var g = groupByName(cur);
+      if (!g) { out.push({ kind: 'node', name: cur }); break; }
+      out.push({ kind: 'group', name: g.name, type: g.type || '' });
+      cur = g.now;
+    }
+    return out;
+  }
+
+  function finalNode(name) {
+    if (!name) return '';
+    var chain = activeChain(name);
+    return chain.length ? chain[chain.length - 1].name : name;
+  }
+
+  function allNodeNames() {
+    var st = ui.state;
+    if (!st) return [];
+    var out = [], seen = Object.create(null);
+    for (var i = 0; i < st.groups.length; i++) {
+      var all = (st.groups[i] && st.groups[i].all) || [];
+      for (var j = 0; j < all.length; j++) {
+        var n = all[j];
+        if (!n || seen[n] || isGroupName(n)) continue;
+        seen[n] = 1;
+        out.push(n);
+      }
+    }
+    if (!out.length) {
+      for (var k = 0; k < st.proxies.length; k++) {
+        var p = st.proxies[k];
+        if (p && p.name && !isGroupName(p.name)) out.push(p.name);
+      }
+    }
+    return out;
+  }
+
+  function groupNodes(group) {
+    var out = [];
+    if (!group || !Array.isArray(group.all)) return out;
+    for (var i = 0; i < group.all.length; i++) {
+      if (group.all[i] && !isGroupName(group.all[i])) out.push(group.all[i]);
+    }
+    return out;
+  }
+
+  function testUrl() {
+    var st = ui.state;
+    if (st && st.providers) {
+      for (var i = 0; i < st.providers.length; i++) {
+        if (st.providers[i] && st.providers[i].testUrl) return st.providers[i].testUrl;
+      }
+    }
+    if (st && st.watchdog && st.watchdog.targets && st.watchdog.targets[0] && st.watchdog.targets[0].url) {
+      return st.watchdog.targets[0].url;
+    }
+    return 'http://www.gstatic.com/generate_204';
+  }
+
+  /* --------------------------------- опрос ------------------------------- */
+
+  async function pollState(manual) {
+    if (pollPromise) return pollPromise;
+    pollPromise = (async function () {
+      try {
+        var st = await apiJson('/api/state', null, 8000);
+        onState(st);
+      } catch (e) {
+        onLinkFail(e);
+        if (manual) toast('Не удалось обновить: ' + friendlyError(e), 'bad');
+      } finally {
+        pollPromise = null;
+      }
+    })();
+    return pollPromise;
+  }
+
+  function onState(raw) {
+    var st = normState(raw);
+    ui.state = st;
+    ui.seen = true;
+    onLinkOk(st.version);
+
+    renderTopbar();
+    renderActive();
+    maybeAutoTest();
+    if (ui.view === 'settings') fillWatchdogForm();
+    if (!streams.traffic && !document.hidden) startTrafficStream();
+    if (ui.view === 'overview') maybeLoadConnCount();
+  }
+
+  // Демон может отдавать traffic.conns = 0 при живых соединениях — один раз уточняем счётчик.
+  function maybeLoadConnCount() {
+    var st = ui.state;
+    if (!st) return;
+    if (num(st.traffic && st.traffic.conns) > 0) return;
+    if (ui.conns.loading) return;
+    if (ui.conns.lastTry && Date.now() - ui.conns.lastTry < 20000) return;
+    loadConnections();
+  }
+
+  function startPolling() {
+    stopPolling();
+    timers.poll = setInterval(function () {
+      if (document.hidden) return;
+      pollState();
+    }, POLL_MS);
+  }
+
+  function stopPolling() {
+    if (timers.poll) { clearInterval(timers.poll); timers.poll = null; }
+  }
+
+  /* -------------------------------- потоки ------------------------------- */
+
+  function startTrafficStream() {
+    stopTrafficStream();
+    if (!ui.api) return;
+    var es;
+    try {
+      es = new EventSource(ui.api + '/api/stream/traffic');
+    } catch (e) {
+      return;
+    }
+    streams.traffic = es;
+    es.onmessage = function (ev) {
+      var d = parseJson(ev.data);
+      if (!d) return;
+      onTraffic(d);
+    };
+    es.onerror = function () {
+      // EventSource переподключается сам; показываем, что данные устарели
+      ui.traffic.at = 0;
+      renderSpeedCard();
+    };
+  }
+
+  function stopTrafficStream() {
+    if (streams.traffic) {
+      try { streams.traffic.close(); } catch (e) { /* ignore */ }
+      streams.traffic = null;
+    }
+  }
+
+  function onTraffic(d) {
+    // /api/stream/traffic отдаёт приращение за интервал (~1 с), т.е. байты/с
+    ui.traffic.up = num(d.up);
+    ui.traffic.down = num(d.down);
+    ui.traffic.at = Date.now();
+    ui.traffic.histD.push(ui.traffic.down);
+    ui.traffic.histU.push(ui.traffic.up);
+    if (ui.traffic.histD.length > 60) ui.traffic.histD.shift();
+    if (ui.traffic.histU.length > 60) ui.traffic.histU.shift();
+    if (document.hidden) return;
+    renderSpeedCard();
+    if (ui.view === 'connections') renderConnMeta();
+  }
+
+  function startLogStream() {
+    if (!ui.api || document.hidden) return;
+    var level = ui.journal.logLevel || 'info';
+    // уже подключены к этому уровню — не пересоздаём поток на каждом опросе состояния
+    if (streams.logs && streams.logLevel === level) return;
+    stopLogStream();
+    setLogStatus('подключение к потоку…');
+    var es;
+    try {
+      es = new EventSource(ui.api + '/api/stream/logs?level=' + encodeURIComponent(level));
+    } catch (e) {
+      setLogStatus('не удалось открыть поток');
+      return;
+    }
+    streams.logs = es;
+    streams.logLevel = level;
+    es.onopen = function () { setLogStatus('поток активен · уровень ' + level); };
+    es.onmessage = function (ev) {
+      var data = parseJson(ev.data);
+      var entry;
+      if (data && typeof data === 'object') {
+        entry = { type: String(data.type || data.level || 'info'), text: String(data.payload != null ? data.payload : (data.message || '')) };
+      } else {
+        entry = { type: level, text: String(ev.data || '') };
+      }
+      pushLog(entry);
+    };
+    es.onerror = function () { setLogStatus('поток прерван · переподключение…'); };
+  }
+
+  function stopLogStream() {
+    if (streams.logs) {
+      try { streams.logs.close(); } catch (e) { /* ignore */ }
+      streams.logs = null;
+      streams.logLevel = '';
+    }
+  }
+
+  function setLogStatus(text) {
+    var n = $('log-status');
+    if (n) n.textContent = text;
+  }
+
+  function stripAnsi(s) {
+    return String(s).replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').replace(/\u009b[0-9;?]*[A-Za-z]/g, '');
+  }
+
+  function pushLog(entry) {
+    var text = stripAnsi(entry.text || '');
+    if (!text) return;
+    ui.journal.logs.push({ t: Date.now(), type: entry.type || 'info', text: text });
+    if (ui.journal.logs.length > 500) ui.journal.logs.shift();
+    appendLogLine({ t: Date.now(), type: entry.type || 'info', text: text });
+    if (ui.journal.logs.length > 500) {
+      var list = $('log-list');
+      if (list && list.firstChild) list.removeChild(list.firstChild);
+    }
+    setLogStatus('поток активен · уровень ' + (ui.journal.logLevel || 'info') + ' · ' + ui.journal.logs.length + ' строк');
+  }
+
+  function logLevelClass(type) {
+    var t = String(type || '').toLowerCase();
+    if (t === 'warn' || t === 'warning') return 'warning';
+    if (t === 'err' || t === 'error' || t === 'fatal') return 'error';
+    if (t === 'debug') return 'debug';
+    return 'info';
+  }
+
+  function appendLogLine(entry) {
+    var list = $('log-list');
+    if (!list) return;
+    // убираем заглушку «логи пока не получены»
+    var placeholder = list.querySelector('.log-status');
+    if (placeholder) list.removeChild(placeholder);
+    var lvl = logLevelClass(entry.type);
+    var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+    var d = new Date(entry.t);
+    var line = el('div', { class: 'log-line ' + lvl }, [
+      el('span', { class: 'log-t', text: pad2(d.getHours()) + ':' + pad2(d.getMinutes()) + ':' + pad2(d.getSeconds()) }),
+      el('span', { class: 'log-lvl ' + lvl, text: lvl }),
+      el('span', { class: 'log-msg', text: entry.text })
+    ]);
+    list.appendChild(line);
+    while (list.childNodes.length > 500) list.removeChild(list.firstChild);
+    if (ui.journal.autoscroll || nearBottom) list.scrollTop = list.scrollHeight;
+  }
+
+  /* ------------------------- проксированный замер ------------------------ */
+
+  function renderTestBar() {
+    var bar = $('srv-testbar');
+    if (!bar) return;
+    var running = delay.running;
+    bar.hidden = !running;
+    if (running) {
+      var txt = $('srv-testbar-text');
+      if (txt) {
+        txt.textContent = 'Измеряю задержку через прокси: ' + delay.total + ' ' +
+          plural(delay.total, ['узел', 'узла', 'узлов']) + '…';
+      }
+    }
+    var b1 = $('btn-srv-test-all');
+    var b2 = $('btn-test-all');
+    if (b1) b1.disabled = running;
+    if (b2) b2.disabled = running;
+  }
+
+  function markDelayPending(names) {
+    delayRev++;
+    for (var i = 0; i < names.length; i++) delay.testing[names[i]] = true;
+  }
+
+  function clearDelayPending(names) {
+    delayRev++;
+    for (var i = 0; i < names.length; i++) delete delay.testing[names[i]];
+  }
+
+  function applyTestResults(res, names) {
+    delayRev++;
+    var results = res && (res.results || res.data || res);
+    var byName = Object.create(null);
+    if (Array.isArray(results)) {
+      for (var i = 0; i < results.length; i++) {
+        var r = results[i];
+        if (r && (r.name || r.proxy)) byName[r.name || r.proxy] = r;
+      }
+    } else if (results && typeof results === 'object') {
+      if (results.results && typeof results.results === 'object' && !Array.isArray(results.results)) {
+        byName = results.results;
+      } else {
+        byName = results;
+      }
+    }
+    var nowSec = Math.floor(Date.now() / 1000);
+    for (var k = 0; k < names.length; k++) {
+      var name = names[k];
+      var item = byName[name];
+      if (Array.isArray(item)) item = item[0] || {};
+      var ms, err;
+      if (typeof item === 'number') { ms = item; err = ''; }
+      else if (item && typeof item === 'object') {
+        ms = item.delay !== undefined && item.delay !== null ? num(item.delay) : num(item.ms);
+        err = item.err || item.error || '';
+      } else {
+        ms = 0;
+        err = 'нет результата';
+      }
+      if (!err && (!isFinite(ms) || ms <= 0)) err = 'нет ответа';
+      delay.map[name] = err
+        ? { delay: 0, err: String(err), t: nowSec }
+        : { delay: Math.max(1, Math.round(ms)), err: '', t: nowSec };
+    }
+  }
+
+  async function runTest(names, opts) {
+    opts = opts || {};
+    if (delay.running) {
+      if (!opts.silent) toast('Проверка задержки уже идёт', 'warn');
+      return false;
+    }
+    var list = (Array.isArray(names) && names.length) ? names : allNodeNames();
+    if (!list.length) {
+      if (!opts.silent) toast('Нет узлов для проверки — демон ещё не прислал состояние', 'warn');
+      return false;
+    }
+    delay.running = true;
+    delay.startedAt = Date.now();
+    delay.total = list.length;
+    markDelayPending(list);
+    renderTestBar();
+    if (ui.view === 'servers') renderServers();
+    if (ui.view === 'overview') renderOverview();
+
+    var started = Date.now();
+    var ticker = setInterval(function () {
+      var txt = $('srv-testbar-text');
+      if (!txt || !delay.running) return;
+      var secs = Math.round((Date.now() - started) / 1000);
+      txt.textContent = 'Измеряю задержку через прокси: ' + delay.total + ' ' +
+        plural(delay.total, ['узел', 'узла', 'узлов']) + '… ' + secs + ' с';
+    }, 1000);
+
+    var ok = false;
+    try {
+      var res = await postJson('/api/test', { names: list, url: testUrl() }, TEST_TIMEOUT);
+      applyTestResults(res, list);
+      ok = true;
+      var alive = 0;
+      for (var i = 0; i < list.length; i++) {
+        var d = delay.map[list[i]];
+        if (d && !d.err) alive++;
+      }
+      if (!opts.silent) {
+        toast('Задержка измерена через прокси: ' + alive + ' из ' + list.length, alive ? 'ok' : 'warn', 3500);
+      }
+    } catch (e) {
+      if (!opts.silent) toast('Не удалось измерить задержку: ' + friendlyError(e), 'bad');
+    } finally {
+      clearInterval(ticker);
+      delay.running = false;
+      clearDelayPending(list);
+      renderTestBar();
+      if (ui.view === 'servers') renderServers();
+      if (ui.view === 'overview') renderOverview();
+    }
+    return ok;
+  }
+
+  function maybeAutoTest() {
+    if (ui.view !== 'servers' || ui.servers.autoTested || delay.running) return;
+    var names = allNodeNames();
+    if (!names.length) return;
+    ui.servers.autoTested = true;
+    delay.lastAuto = Date.now();
+    runTest(names, { silent: true });
+  }
+
+  /* ------------------------------ навигация ------------------------------ */
+
+  function openSidebar() {
+    var sb = $('sidebar');
+    if (!sb) return;
+    sb.classList.add('open');
+    $('scrim').hidden = false;
+    $('burger').setAttribute('aria-expanded', 'true');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeSidebar() {
+    var sb = $('sidebar');
+    if (!sb || !sb.classList.contains('open')) return;
+    sb.classList.remove('open');
+    $('scrim').hidden = true;
+    $('burger').setAttribute('aria-expanded', 'false');
+    document.body.style.overflow = '';
+  }
+
+  function activate(view, initial) {
+    if (VIEWS.indexOf(view) < 0) view = 'overview';
+    var prev = ui.view;
+    ui.view = view;
+
+    VIEWS.forEach(function (name) {
+      var sec = $('view-' + name);
+      if (sec) sec.hidden = name !== view;
+      var btn = document.querySelector('.nav-item[data-view="' + name + '"]');
+      if (btn) {
+        btn.classList.toggle('active', name === view);
+        if (name === view) btn.setAttribute('aria-current', 'page');
+        else btn.removeAttribute('aria-current');
+      }
+    });
+
+    closeSidebar();
+    if (!initial) {
+      try { history.replaceState(null, '', '#' + view); } catch (e) { location.hash = view; }
+    }
+
+    if (view !== 'connections') stopConnRefresh();
+
+    if (view === 'overview') {
+      maybeTestCurrent();
+      renderOverview();
+    } else if (view === 'servers') {
+      renderServers();
+      renderTestBar();
+      maybeAutoTest();
+    } else if (view === 'connections') {
+      renderConnections();
+      loadConnections();
+      startConnRefresh();
+    } else if (view === 'rules') {
+      renderRules();
+      loadRules();
+    } else if (view === 'subscription') {
+      renderSubscription();
+    } else if (view === 'journal') {
+      renderJournal();
+      if (ui.journal.tab === 'logs') startLogStream();
+      else stopLogStream();
+    } else if (view === 'settings') {
+      initSettings();
+      fillWatchdogForm();
+    }
+
+    if (prev === 'journal' && view !== 'journal') stopLogStream();
+  }
+
+  function maybeTestCurrent() {
+    if (!ui.state) return;
+    var wd = ui.state.watchdog || {};
+    var current = wd.current || (ui.state.groups[0] && ui.state.groups[0].now) || '';
+    current = finalNode(current);
+    if (!current) return;
+    if (delay.map[current] || (ui.state.stats && ui.state.stats[current])) return;
+    if (Date.now() - delay.lastAuto < 20000) return;
+    delay.lastAuto = Date.now();
+    runTest([current], { silent: true });
+  }
+
+  /* ------------------------------- рендер -------------------------------- */
+
+  function renderActive() {
+    if (ui.view === 'overview') renderOverview();
+    else if (ui.view === 'servers') renderServers();
+    else if (ui.view === 'connections') renderConnections();
+    else if (ui.view === 'rules') renderRules();
+    else if (ui.view === 'subscription') renderSubscription();
+    else if (ui.view === 'journal') renderJournal();
+    else if (ui.view === 'settings') {
+      fillWatchdogForm();
+      renderSettingsStatus();
+    }
+  }
+
+  function skeletonCard(body, lines) {
+    if (!body) return;
+    clear(body);
+    for (var i = 0; i < (lines || 3); i++) {
+      body.appendChild(el('div', { class: 'skel ' + (i === 0 ? 'tall w60' : 'w80') }));
+    }
+  }
+
+  function delayBadge(name, opts) {
+    opts = opts || {};
+    var span = el('span', { class: 'delay unknown' });
+    if (delay.testing[name]) {
+      span.className = 'delay pending';
+      span.appendChild(el('span', { class: 'spinner' }));
+      span.appendChild(el('span', { text: 'тест' }));
+      span.title = 'Идёт измерение задержки через прокси';
+      return span;
+    }
+    var d = delay.map[name];
+    if (d) {
+      if (d.err) {
+        span.className = 'delay bad';
+        span.textContent = '✕';
+        span.title = 'Ошибка замера: ' + d.err;
+      } else {
+        span.className = 'delay ' + delayClass(d.delay);
+        span.textContent = fmtDelay(d.delay);
+        span.title = 'Задержка через прокси: ' + fmtDelay(d.delay) + ' · ' + fmtAgo(d.t);
+      }
+      return span;
+    }
+    span.textContent = '—';
+    if (opts.unknownTitle) span.title = opts.unknownTitle;
+    else span.title = 'Задержка ещё не измерена — нажмите «Проверить все» или удерживайте узел';
+    return span;
+  }
+
+  function metric(label, value, cls, title) {
+    return el('div', { class: 'metric', title: title || '' }, [
+      el('b', { class: cls || '', text: value }),
+      el('span', { text: label })
+    ]);
+  }
+
+  function kvRow(key, value, title) {
+    var v = value instanceof Node ? value : el('span', { class: 'kv-v', text: value, title: title || String(value) });
+    return el('div', { class: 'kv-row' }, [el('span', { class: 'kv-k', text: key }), v]);
+  }
+
+  function speedFresh() {
+    return ui.traffic.at > 0 && (Date.now() - ui.traffic.at) < 5000;
+  }
+
+  /* ------------------------------- ОБЗОР -------------------------------- */
+
+  function isDeadNode(name) {
+    var wd = ui.state && ui.state.watchdog;
+    return !!(wd && wd.dead && wd.dead.indexOf(name) >= 0);
+  }
+
+  function setBadge(node, cls, text) {
+    if (!node) return;
+    node.className = 'badge ' + (cls || '');
+    node.textContent = text;
+  }
+
+  function renderOverview() {
+    var st = ui.state;
+    if (!st) {
+      skeletonCard($('cur-body'), 4);
+      skeletonCard($('wd-body'), 4);
+      skeletonCard($('speed-body'), 3);
+      skeletonCard($('sub-body'), 3);
+      skeletonCard($('conn-card-body'), 2);
+      setBadge($('cur-badge'), 'muted', 'загрузка');
+      setBadge($('wd-badge-overview'), 'muted', '—');
+      setBadge($('sub-badge'), 'muted', '—');
+      setBadge($('conn-badge'), 'muted', '—');
+      renderSpeedCard();
+      return;
+    }
+    renderCurrentCard(st);
+    renderWatchdogCard(st);
+    renderSpeedCard();
+    renderSubCard(st);
+    renderConnsCard(st);
+  }
+
+  function renderCurrentCard(st) {
+    var body = $('cur-body');
+    if (!body) return;
+    clear(body);
+
+    var wd = st.watchdog || {};
+    var groupName = wd.group || (st.groups[0] && st.groups[0].name) || '';
+    var group = groupName ? groupByName(groupName) : null;
+    var chain = groupName ? activeChain(groupName) : [];
+    var chainFinal = chain.length ? chain[chain.length - 1].name : '';
+    var wdNode = wd.current ? finalNode(wd.current) : '';
+    // активная цепочка важнее: после ручного переключения именно она отражает реальность
+    var cur = chainFinal || wdNode;
+
+    if (!cur) {
+      body.appendChild(el('div', { class: 'empty', text: 'Демон не сообщил активный сервер. Проверьте связь и настройки сторожа.' }));
+      setBadge($('cur-badge'), 'muted', 'нет данных');
+      return;
+    }
+
+    var stat = st.stats && st.stats[cur] ? st.stats[cur] : null;
+    var tested = delay.map[cur];
+    var ms = 0;
+    if (tested && !tested.err) ms = tested.delay;
+    else if (stat && num(stat.delay) > 0) ms = num(stat.delay);
+
+    var healthText, healthCls;
+    if (stat) {
+      if (stat.ok === true) { healthText = 'здоров'; healthCls = 'ok'; }
+      else if (stat.ok === false) { healthText = 'сбои' + (num(stat.fails) ? ': ' + num(stat.fails) : ''); healthCls = 'bad'; }
+      else { healthText = 'нет данных'; healthCls = 'muted'; }
+    } else if (tested) {
+      healthText = tested.err ? 'не отвечает' : 'жив';
+      healthCls = tested.err ? 'bad' : 'ok';
+    } else {
+      healthText = 'нет данных';
+      healthCls = 'muted';
+    }
+    setBadge($('cur-badge'), healthCls, healthText);
+
+    var title = el('div', { class: 'cur-name' }, [
+      el('span', { text: cur }),
+      group ? el('span', { class: 'badge muted', text: group.type || 'группа' }) : null
+    ]);
+    body.appendChild(title);
+
+    var chainText = chain.map(function (x) { return x.name; }).join(' → ');
+    if (groupName) {
+      body.appendChild(el('div', { class: 'cur-group' }, [
+        'Группа ',
+        el('b', { text: groupName }),
+        chainText && chainText !== groupName ? ' · ' + chainText : '',
+        wdNode && wdNode !== cur ? ' · сторож считает активным: ' + wdNode : ''
+      ]));
+    } else {
+      body.appendChild(el('div', { class: 'cur-group', text: 'Группа не определена — сторож ещё не запускался.' }));
+    }
+
+    var nowSec = Math.floor(Date.now() / 1000);
+    var lastCheck = wd.lastCheck;
+    var targets = (lastCheck && lastCheck.results) || [];
+    var okCount = targets.filter(function (r) { return r && r.ok; }).length;
+
+    var metrics = el('div', { class: 'cur-metrics' }, [
+      metric('задержка через прокси', ms > 0 ? fmtDelay(ms) : '—', ms > 0 ? delayClass(ms) : 'dim',
+        'Проксированный замер Clash API, не TCP-пинг роутера'),
+      metric('состояние', healthText, healthCls === 'ok' ? 'good' : healthCls === 'bad' ? 'bad' : 'dim'),
+      metric('цели проверки', targets.length ? okCount + '/' + targets.length : '—', targets.length && okCount === targets.length ? 'good' : targets.length ? 'warn' : 'dim'),
+      metric('стабилен', stat && stat.okSince ? fmtDur(nowSec - num(stat.okSince)) : '—', 'dim')
+    ]);
+    body.appendChild(metrics);
+
+    if (targets.length) {
+      if (lastCheck && lastCheck.name && lastCheck.name !== cur) {
+        body.appendChild(el('div', { class: 'hint', text: 'Последняя проверка целей относится к узлу ' + lastCheck.name }));
+      }
+      var list = el('div', { class: 'cur-targets' });
+      targets.forEach(function (r) {
+        if (!r) return;
+        var ok = !!r.ok;
+        var val = ok ? (num(r.ms) > 0 ? fmtDelay(r.ms) : 'ok') : (r.err ? trim(r.err, 28) : 'сбой');
+        list.appendChild(el('div', { class: 'tchk', title: (r.target || '') + (r.err ? ' — ' + r.err : '') }, [
+          el('span', { class: ok ? 'dot-ok' : 'dot-bad' }),
+          el('span', { class: 'tname', text: r.target || 'цель' }),
+          el('span', { class: 'tval ' + (ok ? 'good' : 'bad'), text: val })
+        ]));
+      });
+      body.appendChild(list);
+    }
+
+    body.appendChild(el('div', { class: 'row' }, [
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        onclick: function () { runTest([cur]); }
+      }, 'Проверить задержку'),
+      el('button', {
+        type: 'button', class: 'btn small ghost',
+        onclick: function () { activate('servers'); }
+      }, 'Все серверы')
+    ]));
+  }
+
+  function renderWatchdogCard(st) {
+    var body = $('wd-body');
+    if (!body) return;
+    clear(body);
+    var wd = st.watchdog || {};
+    var badge = $('wd-badge-overview');
+    if (!wd.enabled) setBadge(badge, 'muted', 'выключен');
+    else if (wd.currentOK === false) setBadge(badge, 'bad', 'сбои');
+    else setBadge(badge, 'ok', 'включён');
+
+    var nowSec = Math.floor(Date.now() / 1000);
+    var lastT = wd.lastCheck ? wd.lastCheck.t : wd.lastRound;
+    var rows = el('div', { class: 'kv' }, [
+      kvRow('Группа', wd.group || '—'),
+      kvRow('Интервал', (wd.intervalSec ? wd.intervalSec + ' с' : '—')),
+      kvRow('Сбоев до переключения', wd.failsToSwitch ? String(wd.failsToSwitch) : '—'),
+      kvRow('Последняя проверка', lastT ? fmtAgo(lastT) : '—', lastT ? fmtTime(lastT) : ''),
+      kvRow('Поток', wd.running ? 'идёт проверка' : (wd.enabled ? 'ожидание' : 'остановлен')),
+      kvRow('Мёртвых узлов', String((wd.dead || []).length))
+    ]);
+    body.appendChild(rows);
+
+    if (lastT && (nowSec - num(lastT)) > Math.max(90, num(wd.intervalSec) * 6)) {
+      body.appendChild(el('div', { class: 'hint' }, 'Последняя проверка была давно — возможно, сторож не работает.'));
+    }
+    if (!wd.enabled) {
+      body.appendChild(el('div', { class: 'hint' }, 'Сторож выключен: автопереключения не выполняются.'));
+    }
+  }
+
+  function renderSpeedCard() {
+    var body = $('speed-body');
+    if (!body) return;
+    var fresh = speedFresh();
+    var d = ui.traffic.histD;
+    var u = ui.traffic.histU;
+
+    var down = fresh ? ui.traffic.down : 0;
+    var up = fresh ? ui.traffic.up : 0;
+
+    clear(body);
+    body.appendChild(el('div', { class: 'speed-row' }, [
+      metric('скачивание', fresh ? fmtSpeed(down) : '—', fresh ? 'good' : 'dim'),
+      metric('отдача', fresh ? fmtSpeed(up) : '—', fresh ? 'good' : 'dim')
+    ]));
+
+    var chart = el('div', { class: 'spark-wrap' });
+    if (fresh && d.length > 1) chart.appendChild(sparkSvg(d));
+    else if (!fresh) chart.appendChild(el('div', { class: 'hint', text: 'Поток /api/stream/traffic не подключён.' }));
+    body.appendChild(chart);
+
+    setBadge($('speed-badge'), fresh ? 'ok' : 'muted', fresh ? 'live' : 'нет данных');
+  }
+
+  function sparkSvg(hist) {
+    var w = 100, h = 40;
+    var max = 1;
+    for (var i = 0; i < hist.length; i++) if (hist[i] > max) max = hist[i];
+    var n = hist.length;
+    var pts = [];
+    for (var j = 0; j < n; j++) {
+      var x = n === 1 ? w : (j / (n - 1)) * w;
+      var y = (h - 3) - (num(hist[j]) / max) * (h - 8);
+      pts.push(x.toFixed(2) + ',' + y.toFixed(2));
+    }
+    var s = svg('svg', { class: 'spark', viewBox: '0 0 ' + w + ' ' + h, preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+    s.appendChild(svg('line', { class: 'axis', x1: 0, y1: h - 1, x2: w, y2: h - 1 }));
+    s.appendChild(svg('polygon', { class: 'fill', points: '0,' + h + ' ' + pts.join(' ') + ' ' + w + ',' + h }));
+    s.appendChild(svg('polyline', { class: 'line', points: pts.join(' ') }));
+    return s;
+  }
+
+  function providerStats(p) {
+    var si = (p && (p.subscriptionInfo || p.subscription)) || {};
+    var expireRaw = pick(si, ['expire', 'expireAt']);
+    var expire = 0;
+    if (typeof expireRaw === 'number') expire = expireRaw;
+    else if (typeof expireRaw === 'string') {
+      if (/^\d+$/.test(expireRaw.trim())) expire = num(expireRaw);
+      else {
+        var parsedExpire = Date.parse(expireRaw);
+        if (!isNaN(parsedExpire)) expire = Math.floor(parsedExpire / 1000);
+      }
+    }
+    var total = num(pick(si, ['total', 'trafficTotal']));
+    var download = num(pick(si, ['download', 'down']));
+    var upload = num(pick(si, ['upload', 'up']));
+    var days = expire > 0 ? Math.ceil((expire * 1000 - Date.now()) / 86400000) : null;
+    return {
+      expire: expire,
+      total: total,
+      download: download,
+      upload: upload,
+      used: download + upload,
+      days: days,
+      unlimited: total <= 0
+    };
+  }
+
+  function expireBadge(days) {
+    if (days === null) return { cls: 'muted', text: 'без срока' };
+    if (days < 0) return { cls: 'bad', text: 'истекла' };
+    if (days <= 3) return { cls: 'bad', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
+    if (days <= 10) return { cls: 'warn', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
+    return { cls: 'muted', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
+  }
+
+  function renderSubCard(st) {
+    var body = $('sub-body');
+    if (!body) return;
+    clear(body);
+    var providers = (st.providers || []).filter(function (p) { return p && p.name; });
+    if (!providers.length) {
+      body.appendChild(el('div', { class: 'empty', text: 'Провайдеры подписок не найдены.' }));
+      setBadge($('sub-badge'), 'muted', '—');
+      return;
+    }
+
+    var worstDays = null;
+    var list = el('div', { class: 'sub-list' });
+    providers.forEach(function (p) {
+      var inf = providerStats(p);
+      if (inf.days !== null && (worstDays === null || inf.days < worstDays)) worstDays = inf.days;
+      var b = expireBadge(inf.days);
+      var item = el('div', { class: 'sub-item' }, [
+        el('div', { class: 'row', style: 'justify-content:space-between' }, [
+          el('h3', { text: p.name }),
+          el('span', { class: 'badge ' + b.cls, text: b.text })
+        ]),
+        el('div', { class: 'kv' }, [
+          kvRow('Узлов', String(num(p.proxyCount))),
+          kvRow('Трафик', inf.unlimited
+            ? fmtBytes(inf.download) + ' из ∞'
+            : fmtBytes(inf.download) + ' / ' + fmtBytes(inf.total),
+          'download ' + inf.download + ' Б, total ' + inf.total + ' Б'),
+          kvRow('Истекает', inf.expire ? fmtDateOnly(inf.expire) : '—', inf.expire ? fmtTime(inf.expire) : ''),
+          kvRow('Обновлён', parseIsoSeconds(p.updatedAt) ? fmtAgo(parseIsoSeconds(p.updatedAt)) : '—', p.updatedAt || '')
+        ])
+      ]);
+      if (!inf.unlimited && inf.total > 0) {
+        var pct = Math.min(100, Math.round((inf.used / inf.total) * 100));
+        item.appendChild(el('div', { class: 'bar ' + (pct > 90 ? 'bad' : pct > 70 ? 'warn' : '') }, [
+          el('i', { style: 'width:' + pct + '%' })
+        ]));
+        item.appendChild(el('div', { class: 'hint', text: 'использовано ' + pct + '%' }));
+      }
+      list.appendChild(item);
+    });
+    body.appendChild(list);
+    var b0 = expireBadge(worstDays);
+    setBadge($('sub-badge'), b0.cls, worstDays === null ? providers.length + ' шт.' : b0.text);
+  }
+
+  function fmtDateOnly(unix) {
+    var d = new Date(num(unix) * 1000);
+    if (isNaN(d.getTime())) return '—';
+    return pad2(d.getDate()) + '.' + pad2(d.getMonth() + 1) + '.' + d.getFullYear();
+  }
+
+  function renderConnsCard(st) {
+    var body = $('conn-card-body');
+    if (!body) return;
+    clear(body);
+    var conns = st.traffic && st.traffic.conns !== undefined ? num(st.traffic.conns) : null;
+    var totalUp = st.traffic ? num(st.traffic.up) : 0;
+    var totalDown = st.traffic ? num(st.traffic.down) : 0;
+    // Демон иногда отдаёт traffic.conns = 0 при живых соединениях — уточняем по /api/connections.
+    if (!conns && ui.conns.at && (Date.now() - ui.conns.at) < 6000) conns = ui.conns.list.length;
+
+    if (conns === null || !ui.state) {
+      body.appendChild(el('div', { class: 'empty', text: 'Нет данных.' }));
+      return;
+    }
+    setBadge($('conn-badge'), conns > 0 ? 'ok' : 'muted', String(conns));
+    body.appendChild(el('div', { class: 'cur-metrics' }, [
+      metric('активных', String(conns), conns > 0 ? 'good' : 'dim'),
+      metric('скачано', fmtBytes(totalDown), 'dim'),
+      metric('отдано', fmtBytes(totalUp), 'dim')
+    ]));
+    body.appendChild(el('button', {
+      type: 'button', class: 'btn small ghost', onclick: function () { activate('connections'); }
+    }, 'Открыть соединения'));
+  }
+
+  /* ------------------------------- СЕРВЕРЫ ------------------------------- */
+
+  function nodeRank(name) {
+    var d = delay.map[name];
+    if (d && !d.err) return 0;
+    if (isDeadNode(name)) return 2;
+    if (d && d.err) return 2;
+    return 1;
+  }
+
+  function nodeComparator(a, b) {
+    var ra = nodeRank(a.name), rb = nodeRank(b.name);
+    if (ra !== rb) return ra - rb;
+    if (ra === 0) {
+      var da = num(delay.map[a.name].delay), db = num(delay.map[b.name].delay);
+      if (da !== db) return da - db;
+    }
+    return a.idx - b.idx;
+  }
+
+  function serversSignature() {
+    var st = ui.state;
+    if (!st) return 'nostate';
+    var parts = ['q:' + ui.servers.search, 'd:' + delayRev];
+    for (var i = 0; i < st.groups.length; i++) {
+      var g = st.groups[i] || {};
+      var all = g.all || [];
+      parts.push([g.name || '', g.now || '', all.length, all[0] || '', all[all.length - 1] || ''].join('|'));
+    }
+    var wd = st.watchdog || {};
+    parts.push('dead:' + (wd.dead || []).join('\u0001'));
+    for (var j = 0; j < st.providers.length; j++) parts.push('p:' + (st.providers[j].updatedAt || ''));
+    return parts.join('\u0002');
+  }
+
+  function renderServers() {
+    var wrap = $('srv-groups');
+    if (!wrap) return;
+    var emptyEl = $('srv-empty');
+    var countEl = $('srv-count');
+    var st = ui.state;
+
+    if (st) {
+      var sig = serversSignature();
+      if (sig === serversSig && wrap.childNodes.length) {
+        renderTestBar();
+        return;
+      }
+      serversSig = sig;
+    } else {
+      serversSig = null;
+    }
+
+    clear(wrap);
+    renderDeadCard();
+
+    if (!st) {
+      if (emptyEl) emptyEl.hidden = false;
+      if (countEl) countEl.textContent = '';
+      renderTestBar();
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+
+    var q = (ui.servers.search || '').trim().toLowerCase();
+    var nodeNames = allNodeNames();
+    var groupsShown = 0;
+    var matched = 0;
+
+    st.groups.forEach(function (g) {
+      if (!g || !g.name) return;
+      var all = Array.isArray(g.all) ? g.all : [];
+
+      var subGroups = [];
+      var nodes = [];
+      all.forEach(function (name, idx) {
+        if (!name) return;
+        if (isGroupName(name)) subGroups.push({ name: name, idx: idx });
+        else nodes.push({ name: name, idx: idx });
+      });
+      subGroups.sort(function (a, b) { return a.idx - b.idx; });
+      nodes.sort(nodeComparator);
+
+      var rows = subGroups.concat(nodes);
+      if (q) {
+        rows = rows.filter(function (r) { return r.name.toLowerCase().indexOf(q) >= 0; });
+      }
+      if (!rows.length && q) return;
+      groupsShown++;
+      matched += rows.length;
+
+      var nodeTotal = groupNodes(g).length;
+      var subTotal = all.filter(function (n) { return isGroupName(n); }).length;
+      var groupBadgeText = q
+        ? rows.length + ' из ' + all.length
+        : nodeTotal + ' ' + plural(nodeTotal, ['узел', 'узла', 'узлов']) +
+          (subTotal ? ' · ' + subTotal + ' ' + plural(subTotal, ['подгруппа', 'подгруппы', 'подгрупп']) : '');
+
+      var groupCard = el('article', { class: 'group' });
+
+      var gChain = activeChain(g.name);
+      var gNowFinal = finalNode(g.now || '');
+      var head = el('div', { class: 'group-head' }, [
+        el('span', { class: 'group-name', text: g.name }),
+        el('span', { class: 'badge muted', text: g.type || 'группа' }),
+        el('span', { class: 'group-cur' }, [
+          el('span', { text: 'текущий:' }),
+          el('b', { text: g.now || '—' }),
+          gNowFinal && gNowFinal !== g.now ? el('span', { class: 'muted', text: '→ ' + gNowFinal }) : null
+        ]),
+        el('span', { class: 'group-meta' }, [
+          el('span', { class: 'badge muted', text: groupBadgeText }),
+          el('button', {
+            type: 'button', class: 'btn small ghost',
+            title: 'Проверить задержку всех узлов группы через прокси',
+            onclick: function (e) {
+              e.stopPropagation();
+              runTest(groupNodes(g));
+            }
+          }, 'Тест группы')
+        ])
+      ]);
+      groupCard.appendChild(head);
+
+      var nodesBox = el('div', { class: 'nodes' });
+      rows.forEach(function (r, i) {
+        nodesBox.appendChild(buildNodeRow(r.name, g, i));
+      });
+      groupCard.appendChild(nodesBox);
+      wrap.appendChild(groupCard);
+    });
+
+    if (!groupsShown) {
+      wrap.appendChild(el('div', { class: 'empty', text: q ? 'Ничего не найдено по запросу «' + ui.servers.search + '»' : 'Группы не найдены.' }));
+    }
+    if (countEl) {
+      countEl.textContent = nodeNames.length
+        ? nodeNames.length + ' ' + plural(nodeNames.length, ['узел', 'узла', 'узлов']) + ' · ' + st.groups.length + ' ' + plural(st.groups.length, ['группа', 'группы', 'групп']) + (q ? ' · найдено ' + matched : '')
+        : '';
+    }
+    renderTestBar();
+  }
+
+  function buildNodeRow(name, group, index) {
+    var proxy = proxyByName(name);
+    var isGroup = isGroupName(name);
+    var current = false;
+    if (group) current = group.now === name || (!!group.now && finalNode(group.now) === name);
+    var dead = isDeadNode(name);
+    var row = el('div', {
+      class: 'node' + (current ? ' current' : '') + (dead ? ' dead' : ''),
+      dataset: { name: name }
+    });
+
+    var title = el('span', { class: 'node-title' }, [el('span', { text: name })]);
+    if (isGroup) title.appendChild(el('span', { class: 'badge muted', text: 'группа' }));
+    if (dead) title.appendChild(el('span', { class: 'badge bad', text: 'мёртв' }));
+
+    var subText;
+    if (isGroup) {
+      var sub = proxyByName(name);
+      subText = 'подгруппа' + (sub ? ' · ' + sub.type : '');
+    } else if (proxy) {
+      subText = (proxy.type || 'узел') + (proxy.udp ? ' · UDP' : '') + (proxy.provider ? ' · ' + proxy.provider : '');
+    } else {
+      subText = 'узел';
+    }
+
+    var nameCell = el('div', { class: 'node-name' }, [
+      title,
+      el('span', { class: 'node-sub', text: subText })
+    ]);
+
+    var typeCell = el('span', { class: 'node-type', text: isGroup ? 'group' : (proxy && proxy.type ? proxy.type : '—') });
+
+    var delayCell;
+    if (isGroup) {
+      var target = finalNode(group ? (group.now === name ? name : group.now) : name);
+      delayCell = delayBadge(target, { unknownTitle: 'Задержка активного узла подгруппы' });
+      delayCell.title = 'Задержка активного узла подгруппы: ' + (target || '—');
+    } else {
+      delayCell = delayBadge(name);
+      delayCell.classList.add('clickable');
+      delayCell.addEventListener('click', function (e) {
+        e.stopPropagation();
+        runTest([name]);
+      });
+    }
+
+    var actions = el('div', { class: 'node-actions' });
+    if (!current) {
+      var btn = el('button', {
+        type: 'button', class: 'btn small primary',
+        onclick: function (e) {
+          e.stopPropagation();
+          selectNode(group ? group.name : '', name, btn);
+        }
+      }, 'Сделать активным');
+      actions.appendChild(btn);
+    } else {
+      actions.appendChild(el('span', { class: 'badge ok', text: 'активен' }));
+    }
+
+    row.appendChild(nameCell);
+    row.appendChild(typeCell);
+    row.appendChild(delayCell);
+    row.appendChild(actions);
+    bindNodeGestures(row, name);
+    return row;
+  }
+
+  function bindNodeGestures(row, name) {
+    var timer = null;
+    var startX = 0, startY = 0, moved = false;
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    row.addEventListener('pointerdown', function (e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (e.target && e.target.closest && e.target.closest('button, a')) return;
+      moved = false;
+      startX = e.clientX;
+      startY = e.clientY;
+      cancel();
+      timer = setTimeout(function () {
+        timer = null;
+        if (!moved) {
+          row.classList.add('pressing');
+          runTest([name]);
+        }
+      }, 550);
+    });
+    row.addEventListener('pointermove', function (e) {
+      if (!timer) return;
+      if (Math.abs(e.clientX - startX) > 12 || Math.abs(e.clientY - startY) > 12) {
+        moved = true;
+        cancel();
+      }
+    });
+    ['pointerup', 'pointercancel', 'pointerleave'].forEach(function (ev) {
+      row.addEventListener(ev, cancel);
+    });
+    row.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      cancel();
+      runTest([name]);
+    });
+  }
+
+  async function selectNode(groupName, name, btn) {
+    if (!groupName) { toast('Не удалось определить группу узла', 'bad'); return; }
+    if (ui.pendingSelect[name]) return;
+    ui.pendingSelect[name] = true;
+    setBusy(btn, true, 'Переключаю…');
+    try {
+      await postJson('/api/select', { group: groupName, name: name }, 15000);
+      var g = groupByName(groupName);
+      if (g) g.now = name;
+      toast('Выбран ' + name, 'ok', 3000);
+      if (ui.view === 'servers') renderServers();
+      pollState();
+    } catch (e) {
+      toast('Не удалось переключить: ' + friendlyError(e), 'bad');
+      setBusy(btn, false, 'Сделать активным');
+    } finally {
+      delete ui.pendingSelect[name];
+    }
+  }
+
+  function renderDeadCard() {
+    var wrap = $('srv-dead-wrap');
+    var list = $('srv-dead');
+    var cnt = $('srv-dead-count');
+    if (!wrap || !list) return;
+    var wd = ui.state && ui.state.watchdog;
+    var dead = (wd && wd.dead) || [];
+    if (!dead.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    if (cnt) { cnt.className = 'badge bad'; cnt.textContent = String(dead.length); }
+    clear(list);
+    dead.forEach(function (name) {
+      list.appendChild(el('span', {
+        class: 'dead-item',
+        title: 'Мёртв по данным сторожа: ' + name
+      }, [el('span', { text: name })]));
+    });
+  }
+
+  /* ------------------------------ СОЕДИНЕНИЯ ----------------------------- */
+
+  function parseStart(value) {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return value > 1e12 ? value / 1000 : value;
+    return parseIsoSeconds(value);
+  }
+
+  // ISO-дата с любым числом долей секунды (mihomo/Go отдают 7–9 знаков) → unix-секунды
+  function parseIsoSeconds(value) {
+    if (!value) return 0;
+    var text = String(value);
+    var normal = text.replace(/(\.\d{3})\d+/, '$1');
+    var ms = Date.parse(normal);
+    if (isNaN(ms)) ms = Date.parse(text);
+    return isNaN(ms) ? 0 : Math.floor(ms / 1000);
+  }
+
+  function normConn(c) {
+    c = c || {};
+    var m = c.metadata || c.meta || {};
+    var host = m.host || m.sni || m.destinationIP || m.destIP || m.remoteDestination || '';
+    if (!host) host = '—';
+    var dst = m.destinationIP || m.destIP || '';
+    var dstPort = m.destinationPort || m.destPort || '';
+    var src = m.sourceIP || '';
+    var srcPort = m.sourcePort || '';
+    var chains = Array.isArray(c.chains) ? c.chains.slice().reverse() : [];
+    return {
+      id: c.id !== undefined && c.id !== null ? String(c.id) : (host + '|' + (m.destinationPort || '') + '|' + (c.start || '')),
+      host: String(host),
+      rule: c.rule ? String(c.rule) : '',
+      payload: c.rulePayload !== undefined && c.rulePayload !== null ? String(c.rulePayload) : '',
+      chain: chains.length ? chains.join(' → ') : (c.chain ? String(c.chain) : ''),
+      up: num(c.upload !== undefined ? c.upload : c.up),
+      down: num(c.download !== undefined ? c.download : c.down),
+      start: parseStart(c.start),
+      network: m.network ? String(m.network) : '',
+      type: m.type ? String(m.type) : '',
+      src: src ? src + (srcPort ? ':' + srcPort : '') : '',
+      dst: dst ? dst + (dstPort ? ':' + dstPort : '') : '',
+      process: m.processPath ? String(m.processPath) : ''
+    };
+  }
+
+  async function loadConnections(manual) {
+    if (ui.conns.loading) return;
+    ui.conns.loading = true;
+    ui.conns.lastTry = Date.now();
+    try {
+      var res = await apiJson('/api/connections', null, 9000);
+      var raw = Array.isArray(res) ? res : (res && Array.isArray(res.connections) ? res.connections : []);
+      ui.conns.list = raw.map(normConn);
+      ui.conns.total = raw.length;
+      ui.conns.up = res && res.up !== undefined ? num(res.up) : ui.conns.list.reduce(function (a, c) { return a + c.up; }, 0);
+      ui.conns.down = res && res.down !== undefined ? num(res.down) : ui.conns.list.reduce(function (a, c) { return a + c.down; }, 0);
+      ui.conns.at = Date.now();
+      ui.conns.err = '';
+      if (ui.view === 'connections') renderConnections();
+      else if (ui.view === 'overview') renderOverview();
+    } catch (e) {
+      ui.conns.err = friendlyError(e);
+      if (manual) toast('Не удалось получить соединения: ' + ui.conns.err, 'bad');
+      if (ui.view === 'connections') renderConnMeta();
+    } finally {
+      ui.conns.loading = false;
+    }
+  }
+
+  function connMatches(c, q) {
+    if (!q) return true;
+    return (c.host + ' ' + c.rule + ' ' + c.payload + ' ' + c.chain + ' ' + c.dst + ' ' + c.src).toLowerCase().indexOf(q) >= 0;
+  }
+
+  function renderConnections() {
+    var body = $('conn-body');
+    if (!body) return;
+    var wrap = $('conn-table-wrap');
+    var keepScroll = wrap ? wrap.scrollTop : 0;
+    var q = (ui.conns.search || '').trim().toLowerCase();
+    var list = ui.conns.list.slice().sort(function (a, b) { return b.start - a.start; });
+    if (q) list = list.filter(function (c) { return connMatches(c, q); });
+
+    clear(body);
+    var nowSec = Math.floor(Date.now() / 1000);
+    var frag = document.createDocumentFragment();
+
+    list.forEach(function (c) {
+      var ruleText = c.rule || '—';
+      var closeBtn = el('button', {
+        type: 'button', class: 'btn small ghost', title: 'Закрыть соединение',
+        onclick: function () { closeConnection(c.id, closeBtn); }
+      }, '✕');
+
+      var tr = el('tr', null, [
+        el('td', { 'data-label': 'Хост' }, [
+          el('div', { class: 'cell-stack' }, [
+            el('span', { class: 'cell-main', text: c.host, title: c.host }),
+            el('span', {
+              class: 'cell-sub',
+              text: [c.network, c.type, c.dst, c.process ? c.process : ''].filter(Boolean).join(' · ') || (c.src ? 'из ' + c.src : ''),
+              title: [c.dst && 'назначение: ' + c.dst, c.src && 'источник: ' + c.src, c.process && 'процесс: ' + c.process].filter(Boolean).join('\n')
+            })
+          ])
+        ]),
+        el('td', { 'data-label': 'Правило' }, [
+          el('div', { class: 'cell-stack' }, [
+            el('span', { class: 'cell-main', text: ruleText }),
+            c.payload ? el('span', { class: 'cell-sub', text: c.payload, title: c.payload }) : null
+          ])
+        ]),
+        el('td', { 'data-label': 'Цепочка' }, [
+          el('span', { class: 'cell-chain', text: c.chain || '—' })
+        ]),
+        el('td', { 'data-label': '↑', class: 'num', text: fmtBytes(c.up) }),
+        el('td', { 'data-label': '↓', class: 'num', text: fmtBytes(c.down) }),
+        el('td', { 'data-label': 'Время', class: 'num', text: fmtDur(nowSec - c.start) }),
+        el('td', { class: 'act', 'data-label': '' }, [closeBtn])
+      ]);
+      frag.appendChild(tr);
+    });
+    body.appendChild(frag);
+
+    var table = $('conn-table');
+    var emptyEl = $('conn-empty');
+    if (emptyEl) {
+      emptyEl.hidden = list.length > 0;
+      emptyEl.textContent = q ? 'Ничего не найдено по запросу «' + ui.conns.search + '»' : 'Нет активных соединений';
+    }
+    if (table) table.hidden = list.length === 0;
+
+    var countEl = $('conn-count');
+    if (countEl) {
+      countEl.textContent = ui.conns.list.length
+        ? (q ? list.length + ' из ' + ui.conns.list.length : String(ui.conns.list.length))
+        : '';
+    }
+    renderConnMeta();
+    if (wrap) wrap.scrollTop = keepScroll;
+  }
+
+  function renderConnMeta() {
+    var meta = $('conn-meta');
+    if (!meta) return;
+    if (ui.conns.err) {
+      meta.textContent = 'ошибка: ' + ui.conns.err + (ui.conns.at ? ' · данные от ' + fmtClock(ui.conns.at / 1000) : '');
+      meta.className = 'small';
+      meta.style.color = 'var(--bad)';
+      return;
+    }
+    meta.style.color = '';
+    meta.className = 'muted small';
+    var parts = [];
+    if (ui.conns.at) parts.push('обновлено ' + fmtClock(ui.conns.at / 1000));
+    parts.push('всего ↑ ' + fmtBytes(ui.conns.up) + ' · ↓ ' + fmtBytes(ui.conns.down));
+    meta.textContent = parts.join(' · ');
+    var paused = $('conn-paused');
+    if (paused) paused.hidden = !(ui.conns.hover && canHover());
+  }
+
+  function canHover() {
+    try { return window.matchMedia('(hover: hover)').matches; } catch (e) { return false; }
+  }
+
+  function startConnRefresh() {
+    stopConnRefresh();
+    timers.conns = setInterval(function () {
+      if (ui.view !== 'connections' || document.hidden) return;
+      if (ui.conns.hover || ui.conns.closing) return;
+      loadConnections();
+    }, CONN_MS);
+  }
+
+  function stopConnRefresh() {
+    if (timers.conns) { clearInterval(timers.conns); timers.conns = null; }
+  }
+
+  async function closeConnection(id, btn) {
+    if (ui.conns.closing) return;
+    ui.conns.closing = true;
+    if (btn) btn.disabled = true;
+    try {
+      await apiJson('/api/connections?id=' + encodeURIComponent(id), { method: 'DELETE' }, 9000);
+      ui.conns.list = ui.conns.list.filter(function (c) { return c.id !== id; });
+      renderConnections();
+      toast('Соединение закрыто', 'ok', 2000);
+    } catch (e) {
+      if (btn) btn.disabled = false;
+      toast('Не удалось закрыть соединение: ' + friendlyError(e), 'bad');
+    } finally {
+      ui.conns.closing = false;
+    }
+  }
+
+  async function closeAllConnections() {
+    if (!ui.conns.list.length) { toast('Активных соединений нет', 'warn'); return; }
+    var ok = await confirmDialog({
+      title: 'Закрыть все соединения?',
+      text: 'Будет отправлен DELETE /api/connections. Активные загрузки, обновления и звонки прервутся.',
+      okLabel: 'Закрыть всё',
+      danger: true
+    });
+    if (!ok) return;
+    var btn = $('btn-conn-close-all');
+    setBusy(btn, true, 'Закрываю…');
+    try {
+      await apiJson('/api/connections', { method: 'DELETE' }, 15000);
+      ui.conns.list = [];
+      renderConnections();
+      toast('Все соединения закрыты', 'ok');
+      pollState();
+    } catch (e) {
+      toast('Не удалось закрыть соединения: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false, 'Закрыть всё');
+    }
+  }
+
+  /* -------------------------------- ПРАВИЛА ------------------------------ */
+
+  async function loadRules(manual) {
+    if (ui.rules.loading) return;
+    ui.rules.loading = true;
+    try {
+      var res = await apiJson('/api/rules', null, 12000);
+      var raw = res && Array.isArray(res.rules) ? res.rules : (Array.isArray(res) ? res : []);
+      ui.rules.list = raw.map(function (r) {
+        r = r || {};
+        return {
+          type: r.type ? String(r.type) : '—',
+          payload: r.payload !== undefined && r.payload !== null ? String(r.payload) : '',
+          proxy: r.proxy ? String(r.proxy) : (r.target ? String(r.target) : '')
+        };
+      });
+      ui.rules.at = Date.now();
+      ui.rules.err = '';
+      if (ui.view === 'rules') renderRules();
+    } catch (e) {
+      ui.rules.err = friendlyError(e);
+      if (manual) toast('Не удалось получить правила: ' + ui.rules.err, 'bad');
+      if (ui.view === 'rules') renderRules();
+    } finally {
+      ui.rules.loading = false;
+    }
+  }
+
+  function renderRules() {
+    var body = $('rules-body');
+    if (!body) return;
+    var sig = (ui.rules.at || 0) + '|' + ui.rules.list.length + '|' + (ui.rules.err || '') + '|' + (ui.rules.search || '');
+    if (sig === rulesSig && body.childNodes.length) return;
+    rulesSig = sig;
+
+    var keepScroll = 0;
+    var wrap = body.closest ? body.closest('.table-wrap') : null;
+    if (wrap) keepScroll = wrap.scrollTop;
+    var q = (ui.rules.search || '').trim().toLowerCase();
+    var list = ui.rules.list.filter(function (r) {
+      if (!q) return true;
+      return (r.type + ' ' + r.payload + ' ' + r.proxy).toLowerCase().indexOf(q) >= 0;
+    });
+
+    clear(body);
+    var frag = document.createDocumentFragment();
+    list.forEach(function (r) {
+      frag.appendChild(el('tr', null, [
+        el('td', { 'data-label': 'Тип' }, [el('span', { class: 'cell-main', text: r.type })]),
+        el('td', { 'data-label': 'Содержимое' }, [
+          el('span', { class: 'cell-main', text: r.payload || '—', title: r.payload })
+        ]),
+        el('td', { 'data-label': 'Куда идёт' }, [el('span', { class: 'cell-chain', text: r.proxy || '—' })])
+      ]));
+    });
+    body.appendChild(frag);
+
+    var table = $('rules-table');
+    var emptyEl = $('rules-empty');
+    if (table) table.hidden = list.length === 0;
+    if (emptyEl) {
+      emptyEl.hidden = list.length > 0;
+      if (ui.rules.err) emptyEl.textContent = 'Не удалось загрузить правила: ' + ui.rules.err;
+      else if (q) emptyEl.textContent = 'Ничего не найдено по запросу «' + ui.rules.search + '»';
+      else emptyEl.textContent = 'Правила не загружены — нажмите «Обновить» в верхней панели.';
+    }
+
+    var countEl = $('rules-count');
+    if (countEl) countEl.textContent = ui.rules.list.length ? (q ? list.length + ' из ' + ui.rules.list.length : String(ui.rules.list.length)) : '';
+    var meta = $('rules-meta');
+    if (meta) {
+      meta.textContent = ui.rules.err
+        ? 'ошибка: ' + ui.rules.err
+        : (ui.rules.at ? 'правил: ' + ui.rules.list.length + ' · обновлено ' + fmtClock(ui.rules.at / 1000) : 'загрузка…');
+      meta.style.color = ui.rules.err ? 'var(--bad)' : '';
+    }
+    if (wrap) wrap.scrollTop = keepScroll;
+  }
+
+  /* ------------------------------- ПОДПИСКА ------------------------------ */
+
+  function providerCard(p) {
+    var inf = providerStats(p);
+    var b = expireBadge(inf.days);
+    var card = el('article', { class: 'card' });
+
+    card.appendChild(el('header', { class: 'card-h' }, [
+      el('h2', { text: p.name }),
+      el('span', { class: 'row' }, [
+        p.vehicleType ? el('span', { class: 'badge muted', text: p.vehicleType }) : null,
+        p.type ? el('span', { class: 'badge muted', text: p.type }) : null,
+        el('span', { class: 'badge ' + b.cls, text: b.text })
+      ])
+    ]));
+
+    var body = el('div', { class: 'card-b' });
+    body.appendChild(el('div', { class: 'kv' }, [
+      kvRow('Узлов', String(num(p.proxyCount))),
+      kvRow('Истекает', inf.expire ? fmtTime(inf.expire) : '—', inf.expire ? 'unix ' + inf.expire : ''),
+      kvRow('Осталось', inf.days === null ? 'без срока' : (inf.days < 0 ? 'истекла' : inf.days + ' ' + plural(inf.days, ['день', 'дня', 'дней']))),
+      kvRow('Скачано', fmtBytes(inf.download), inf.download + ' Б'),
+      kvRow('Отдано', fmtBytes(inf.upload), inf.upload + ' Б'),
+      kvRow('Лимит', inf.unlimited ? 'не ограничен' : fmtBytes(inf.total), inf.total + ' Б'),
+      kvRow('Обновлён', p.updatedAt ? fmtAgo(parseIsoSeconds(p.updatedAt)) : '—', p.updatedAt || ''),
+      kvRow('Интервал', p.interval ? p.interval + ' с' : '—'),
+      kvRow('URL проверки', p.testUrl || '—', p.testUrl || '')
+    ]));
+
+    if (!inf.unlimited && inf.total > 0) {
+      var pct = Math.min(100, Math.round((inf.used / inf.total) * 100));
+      body.appendChild(el('div', { class: 'bar ' + (pct > 90 ? 'bad' : pct > 70 ? 'warn' : '') }, [
+        el('i', { style: 'width:' + pct + '%' })
+      ]));
+      body.appendChild(el('div', { class: 'hint', text: 'использовано ' + pct + '% · осталось ' + fmtBytes(Math.max(0, inf.total - inf.used)) }));
+    } else if (inf.unlimited) {
+      body.appendChild(el('div', { class: 'hint', text: 'Лимит трафика не задан провайдером.' }));
+    }
+
+    var btn = el('button', {
+      type: 'button', class: 'btn small', text: 'Обновить',
+      onclick: function () { updateProvider(p.name, btn); }
+    });
+    body.appendChild(el('div', { class: 'row' }, [btn]));
+    card.appendChild(body);
+    return card;
+  }
+
+  function renderSubscription() {
+    var list = $('sub-list');
+    if (!list) return;
+    clear(list);
+    var emptyEl = $('sub-empty');
+    var st = ui.state;
+    if (!st) {
+      if (emptyEl) { emptyEl.hidden = false; emptyEl.textContent = 'Загрузка данных подписки…'; }
+      return;
+    }
+    var providers = (st.providers || []).filter(function (p) { return p && p.name; });
+    if (!providers.length) {
+      if (emptyEl) { emptyEl.hidden = false; emptyEl.textContent = 'Провайдеры подписок не найдены в состоянии демона.'; }
+      return;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+    providers.forEach(function (p) { list.appendChild(providerCard(p)); });
+  }
+
+  async function updateProvider(name, btn) {
+    setBusy(btn, true, 'Обновляю…');
+    try {
+      await postJson('/api/providers/update', { name: name }, 60000);
+      toast('Подписка «' + name + '» обновляется', 'ok', 3500);
+      setTimeout(function () { pollState(); }, 1500);
+    } catch (e) {
+      toast('Не удалось обновить «' + name + '»: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false, 'Обновить');
+    }
+  }
+
+  async function refreshSubscriptions(btn) {
+    var st = ui.state;
+    var providers = (st && st.providers ? st.providers : []).filter(function (p) { return p && p.name; });
+    if (!providers.length) { toast('Провайдеры подписок не найдены', 'warn'); return; }
+    setBusy(btn, true);
+    var ok = 0, errors = 0;
+    for (var i = 0; i < providers.length; i++) {
+      try {
+        await postJson('/api/providers/update', { name: providers[i].name }, 60000);
+        ok++;
+      } catch (e) {
+        errors++;
+      }
+    }
+    setBusy(btn, false);
+    if (ok) {
+      toast('Обновление запущено: ' + ok + ' ' + plural(ok, ['провайдер', 'провайдера', 'провайдеров']), 'ok');
+      setTimeout(function () { pollState(); }, 1500);
+    }
+    if (errors) toast('Не удалось обновить провайдеров: ' + errors, 'bad');
+  }
+
+  /* -------------------------------- ЖУРНАЛ -------------------------------- */
+
+  function updateJournalTabs() {
+    var tabs = $('jrn-tabs');
+    if (tabs) {
+      Array.prototype.forEach.call(tabs.querySelectorAll('[data-tab]'), function (b) {
+        b.classList.toggle('active', b.dataset.tab === ui.journal.tab);
+        b.setAttribute('aria-selected', b.dataset.tab === ui.journal.tab ? 'true' : 'false');
+      });
+    }
+    var evPane = $('jrn-events-pane');
+    var lgPane = $('jrn-logs-pane');
+    if (evPane) evPane.hidden = ui.journal.tab !== 'events';
+    if (lgPane) lgPane.hidden = ui.journal.tab !== 'logs';
+  }
+
+  function renderJournal() {
+    updateJournalTabs();
+    if (ui.journal.tab === 'events') {
+      renderEvents();
+      stopLogStream();
+    } else {
+      if (!ui.journal.logs.length) {
+        var list = $('log-list');
+        if (list && !list.childNodes.length) {
+          list.appendChild(el('div', { class: 'log-status' }, 'Ожидание строк журнала…'));
+        }
+      }
+      if (ui.view === 'journal' && !document.hidden) startLogStream();
+    }
+  }
+
+  function matchEvent(ev, filter) {
+    var kind = String(ev.kind || '').toLowerCase();
+    var text = String(ev.text || '');
+    if (filter === 'fail') {
+      return kind === 'bad' || kind === 'warn' || /сбо|ошиб|недоступ|не отвеч|dead|fail|timeout|таймаут/i.test(text);
+    }    if (filter === 'switch') {
+      return /переключ|выбран|выбира|select|switch|лучш|fallback/i.test(text + ' ' + kind);
+    }
+    return true;
+  }
+
+  function renderEvents() {
+    var box = $('ev-list');
+    if (!box) return;
+    var st = ui.state;
+    var allEvents = st && Array.isArray(st.events) ? st.events : [];
+    var firstT = allEvents.length ? num(allEvents[0] && allEvents[0].t) : 0;
+    var lastT = allEvents.length ? num(allEvents[allEvents.length - 1] && allEvents[allEvents.length - 1].t) : 0;
+    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + ui.journal.filter + '|' + (st ? 1 : 0);
+    if (sig === eventsSig && box.childNodes.length) return;
+    eventsSig = sig;
+
+    var keepScroll = box.scrollTop;
+    var events = allEvents.slice();
+    events.sort(function (a, b) { return num(b && b.t) - num(a && a.t); });
+    var filter = ui.journal.filter;
+    var filtered = events.filter(function (ev) { return ev && matchEvent(ev, filter); });
+
+    clear(box);
+    filtered.slice(0, 300).forEach(function (ev) {
+      var kind = String(ev.kind || 'info').toLowerCase();
+      if (['info', 'warn', 'bad', 'ok'].indexOf(kind) < 0) kind = 'info';
+      box.appendChild(el('div', { class: 'ev ' + kind }, [
+        el('span', { class: 'ev-t', text: fmtClock(ev.t), title: fmtTime(ev.t) }),
+        el('span', { class: 'ev-kind', text: kind }),
+        ev.group ? el('span', { class: 'ev-group', text: ev.group }) : null,
+        el('span', { class: 'ev-text', text: ev.text || '' })
+      ]));
+    });
+    box.scrollTop = keepScroll;
+
+    var emptyEl = $('ev-empty');
+    if (emptyEl) {
+      emptyEl.hidden = filtered.length > 0;
+      if (!st) emptyEl.textContent = 'Нет данных: демон недоступен.';
+      else if (!events.length) emptyEl.textContent = 'Событий пока нет.';
+      else if (!filtered.length) emptyEl.textContent = 'Событий с таким фильтром нет.';
+    }
+    var cnt = $('ev-count');
+    if (cnt) cnt.textContent = events.length ? (filter === 'all' ? String(filtered.length) : filtered.length + ' из ' + events.length) : '';
+
+    var filters = $('ev-filters');
+    if (filters) {
+      Array.prototype.forEach.call(filters.querySelectorAll('[data-filter]'), function (b) {
+        b.classList.toggle('active', b.dataset.filter === filter);
+      });
+    }
+  }
+
+  function renderLogsList() {
+    var list = $('log-list');
+    if (!list) return;
+    clear(list);
+    if (!ui.journal.logs.length) {
+      list.appendChild(el('div', { class: 'log-status' }, 'Логи пока не получены.'));
+      return;
+    }
+    var items = ui.journal.logs.slice(-500);
+    for (var i = 0; i < items.length; i++) appendLogLine(items[i]);
+    list.scrollTop = list.scrollHeight;
+  }
+
+  function setJournalTab(tab) {
+    ui.journal.tab = tab === 'logs' ? 'logs' : 'events';
+    updateJournalTabs();
+    if (ui.journal.tab === 'logs') {
+      renderLogsList();
+      if (ui.view === 'journal' && !document.hidden) startLogStream();
+    } else {
+      stopLogStream();
+      renderEvents();
+    }
+  }
+
+  /* ------------------------------- НАСТРОЙКИ ----------------------------- */
+
+  function initSettings() {
+    var input = $('set-api');
+    var def = $('set-api-default');
+    var saved = readSavedApi();
+    if (def) def.textContent = defaultBase();
+    if (input && !ui.settings.inited) input.value = saved ? normBase(saved) : '';
+    ui.settings.inited = true;
+    renderSettingsStatus();
+    fillGroupSelect();
+    fillWatchdogForm();
+  }
+
+  function renderSettingsStatus() {
+    var status = $('set-api-status');
+    if (status) {
+      var saved = readSavedApi();
+      status.textContent = 'Сейчас используется: ' + ui.api + (saved ? ' · сохранено в localStorage' : ' · по умолчанию');
+    }
+    var badge = $('wd-badge-settings');
+    var wd = ui.state && ui.state.watchdog;
+    if (badge) {
+      if (!wd) setBadge(badge, 'muted', '—');
+      else setBadge(badge, wd.enabled ? 'ok' : 'muted', wd.enabled ? 'включён' : 'выключен');
+    }
+    var wdStatus = $('wd-status');
+    if (wdStatus && ui.settings.dirty) {
+      wdStatus.textContent = 'есть несохранённые изменения';
+      wdStatus.style.color = 'var(--warn)';
+    }
+  }
+
+  function fillGroupSelect(selected) {
+    var sel = $('wd-group');
+    if (!sel) return;
+    var st = ui.state;
+    var names = st ? st.groups.map(function (g) { return g && g.name; }).filter(Boolean) : [];
+    var sig = names.join('\u0000');
+    var cur = selected || sel.value;
+    if (sig === wdGroupsSig && sel.options.length) {
+      if (cur && names.indexOf(cur) >= 0) sel.value = cur;
+      return;
+    }
+    wdGroupsSig = sig;
+    clear(sel);
+    if (!names.length) {
+      sel.appendChild(el('option', { value: '', text: '— нет групп —' }));
+      return;
+    }
+    names.forEach(function (n) { sel.appendChild(el('option', { value: n, text: n })); });
+    if (cur && names.indexOf(cur) >= 0) sel.value = cur;
+    else sel.value = names[0];
+  }
+
+  function fillWatchdogForm(force) {
+    var st = ui.state;
+    if (!st) return;
+    var wd = st.watchdog || {};
+    if (ui.settings.dirty && !force) { renderSettingsStatus(); return; }
+    var en = $('wd-enabled');
+    if (en) en.checked = !!wd.enabled;
+    var iv = $('wd-interval');
+    if (iv) iv.value = wd.intervalSec !== undefined && wd.intervalSec !== null ? String(wd.intervalSec) : '';
+    var fs = $('wd-fails');
+    if (fs) fs.value = wd.failsToSwitch !== undefined && wd.failsToSwitch !== null ? String(wd.failsToSwitch) : '';
+    fillGroupSelect(wd.group);
+    var sig = JSON.stringify(wd.targets || []);
+    if (force || sig !== wdTargetsSig) {
+      renderTargets(wd.targets);
+      wdTargetsSig = sig;
+    }
+    var badge = $('wd-badge-settings');
+    if (badge) setBadge(badge, wd.enabled ? 'ok' : 'muted', wd.enabled ? 'включён' : 'выключен');
+  }
+
+  function renderTargets(targets) {
+    var box = $('wd-targets');
+    if (!box) return;
+    clear(box);
+    var list = Array.isArray(targets) ? targets.slice() : [];
+    if (!list.length) list.push({ name: 'YouTube', url: 'https://www.youtube.com/generate_204' });
+    list.forEach(function (t) {
+      box.appendChild(buildTargetRow(t && t.name ? t.name : '', t && t.url ? t.url : ''));
+    });
+  }
+
+  function buildTargetRow(name, url) {
+    var nameInput = el('input', {
+      class: 'input t-name', type: 'text', value: name,
+      placeholder: 'Имя (YouTube)', autocomplete: 'off', spellcheck: 'false'
+    });
+    var urlInput = el('input', {
+      class: 'input mono t-url', type: 'url', value: url,
+      placeholder: 'https://…/generate_204', inputmode: 'url', autocomplete: 'off', spellcheck: 'false'
+    });
+    var del = el('button', { type: 'button', class: 'btn small danger t-del', title: 'Удалить цель', text: '✕' });
+    var row = el('div', { class: 'target-row' }, [nameInput, urlInput, del]);
+    nameInput.addEventListener('input', markWdDirty);
+    urlInput.addEventListener('input', markWdDirty);
+    del.addEventListener('click', function () {
+      if (row.parentNode) row.parentNode.removeChild(row);
+      markWdDirty();
+    });
+    return row;
+  }
+
+  function markWdDirty() {
+    ui.settings.dirty = true;
+    ui.settings.targetsDirty = true;
+    var wdStatus = $('wd-status');
+    if (wdStatus) {
+      wdStatus.textContent = 'есть несохранённые изменения';
+      wdStatus.style.color = 'var(--warn)';
+    }
+  }
+
+  function collectWatchdog() {
+    var enabled = !!($('wd-enabled') && $('wd-enabled').checked);
+    var intervalSec = parseInt($('wd-interval') ? $('wd-interval').value : '', 10);
+    var fails = parseInt($('wd-fails') ? $('wd-fails').value : '', 10);
+    if (!isFinite(intervalSec) || intervalSec < 3) {
+      toast('Интервал проверки: целое число не меньше 3 секунд', 'bad');
+      return null;
+    }
+    if (!isFinite(fails) || fails < 1) {
+      toast('Сбоев до переключения: целое число не меньше 1', 'bad');
+      return null;
+    }
+    var group = $('wd-group') ? $('wd-group').value : '';
+    if (!group) {
+      toast('Не выбрана группа для сторожа', 'bad');
+      return null;
+    }
+    var rows = $('wd-targets') ? $('wd-targets').querySelectorAll('.target-row') : [];
+    var targets = [];
+    for (var i = 0; i < rows.length; i++) {
+      var nameEl = rows[i].querySelector('.t-name');
+      var urlEl = rows[i].querySelector('.t-url');
+      var name = nameEl ? nameEl.value.trim() : '';
+      var url = urlEl ? urlEl.value.trim() : '';
+      if (!name && !url) continue;
+      if (!url) { toast('У цели «' + (name || '—') + '» не задан URL', 'bad'); return null; }
+      if (!/^https?:\/\/\S+$/i.test(url)) {
+        toast('URL цели должен начинаться с http:// или https://', 'bad');
+        return null;
+      }
+      targets.push({ name: name || url, url: url });
+    }
+    if (!targets.length) {
+      toast('Добавьте хотя бы одну цель проверки', 'bad');
+      return null;
+    }
+    return { enabled: enabled, group: group, intervalSec: intervalSec, failsToSwitch: fails, targets: targets };
+  }
+
+  async function saveWatchdog() {
+    var payload = collectWatchdog();
+    if (!payload) return;
+    var btn = $('btn-wd-save');
+    setBusy(btn, true, 'Сохраняю…');
+    try {
+      await postJson('/api/watch', payload, 15000);
+      ui.settings.dirty = false;
+      ui.settings.targetsDirty = false;
+      var status = $('wd-status');
+      if (status) {
+        status.style.color = 'var(--ok)';
+        status.textContent = 'сохранено в ' + new Date().toLocaleTimeString('ru-RU');
+      }
+      toast('Настройки сторожа сохранены', 'ok');
+      await pollState();
+    } catch (e) {
+      toast('Не удалось сохранить настройки сторожа: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false, 'Сохранить');
+    }
+  }
+
+  function resetForApiChange() {
+    stopTrafficStream();
+    stopLogStream();
+    ui.state = null;
+    ui.seen = false;
+    ui.link = { ok: false, err: '', fails: 0, version: '' };
+    ui.conns.list = [];
+    ui.conns.at = 0;
+    ui.conns.lastTry = 0;
+    ui.conns.up = 0;
+    ui.conns.down = 0;
+    ui.conns.err = '';
+    ui.rules.list = [];
+    ui.rules.at = 0;
+    ui.rules.err = '';
+    ui.traffic = { up: 0, down: 0, at: 0, histD: [], histU: [] };
+    delay.map = Object.create(null);
+    delay.testing = Object.create(null);
+    delay.running = false;
+    delay.lastAuto = 0;
+    ui.servers.autoTested = false;
+    ui.pendingSelect = Object.create(null);
+    ui.journal.logs = [];
+    var logList = $('log-list');
+    if (logList) clear(logList);
+    hideBanner();
+    renderTopbar();
+    renderActive();
+    renderSpeedCard();
+    if (!document.hidden) startTrafficStream();
+    if (ui.view === 'connections') loadConnections();
+    if (ui.view === 'rules') loadRules();
+  }
+
+  function applyApi() {
+    var input = $('set-api');
+    var raw = input ? input.value.trim() : '';
+    var norm = normBase(raw);
+    if (raw) {
+      try { new URL(norm); } catch (e) { toast('Некорректный адрес: ' + raw, 'bad'); return; }
+    }
+    saveApi(norm);
+    if (input) input.value = norm;
+    ui.api = norm || defaultBase();
+    resetForApiChange();
+    renderSettingsStatus();
+    toast('Адрес демона: ' + ui.api, 'ok', 3500);
+    pollState(true);
+  }
+
+  function resetApi() {
+    saveApi('');
+    var input = $('set-api');
+    if (input) input.value = '';
+    ui.api = defaultBase();
+    resetForApiChange();
+    renderSettingsStatus();
+    toast('Адрес сброшен: ' + ui.api, 'ok', 3500);
+    pollState(true);
+  }
+
+  async function testDaemon() {
+    var input = $('set-api');
+    var typed = input ? normBase(input.value.trim()) : '';
+    if (typed && typed !== ui.api) {
+      toast('Сначала нажмите «Применить» — проверяется адрес ' + ui.api, 'warn');
+      return;
+    }
+    var btn = $('btn-api-test');
+    setBusy(btn, true, 'Проверяю…');
+    try {
+      var res = await apiJson('/api/ping', null, 6000);
+      var status = $('set-api-status');
+      if (status) status.textContent = 'Связь есть: демон ' + ((res && res.version) || '?') + ' · ' + ui.api;
+      toast('Демон ответил: ' + ui.api, 'ok');
+    } catch (e) {
+      var st = $('set-api-status');
+      if (st) st.textContent = 'Нет связи: ' + friendlyError(e);
+      toast('Нет связи: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false, 'Проверить связь');
+    }
+  }
+
+  /* --------------------------- действия обзора --------------------------- */
+
+  async function switchToBest() {
+    var st = ui.state;
+    if (!st) { toast('Нет данных о группах — дождитесь ответа демона', 'warn'); return; }
+    if (delay.running) { toast('Проверка задержки уже идёт', 'warn'); return; }
+    var wd = st.watchdog || {};
+    var groupName = wd.group || (st.groups[0] && st.groups[0].name) || '';
+    var group = groupName ? groupByName(groupName) : null;
+    if (!group) { toast('Группа для переключения не найдена', 'bad'); return; }
+    var nodes = groupNodes(group);
+    if (!nodes.length) { toast('В группе «' + group.name + '» нет узлов', 'warn'); return; }
+
+    var btn = $('btn-best');
+    setBusy(btn, true);
+    try {
+      await runTest(nodes, { silent: true });
+      var best = null;
+      nodes.forEach(function (n) {
+        var d = delay.map[n];
+        if (d && !d.err && (!best || d.delay < best.delay)) best = { name: n, delay: d.delay };
+      });
+      if (!best) { toast('Живых серверов не найдено — переключение отменено', 'bad'); return; }
+      await postJson('/api/select', { group: group.name, name: best.name }, 15000);
+      group.now = best.name;
+      toast('Переключено на ' + best.name + ' (' + fmtDelay(best.delay) + ')', 'ok', 5000);
+      pollState();
+      if (ui.view === 'servers') renderServers();
+    } catch (e) {
+      toast('Не удалось переключить на лучший: ' + friendlyError(e), 'bad');
+    } finally {
+      setBusy(btn, false);
+    }
+  }
+
+  async function refreshAll() {
+    var btn = $('btn-refresh');
+    if (btn) btn.classList.add('spinning');
+    try {
+      await pollState(true);
+      if (ui.view === 'rules') await loadRules(true);
+      if (ui.view === 'connections') await loadConnections(true);
+      if (ui.seen) toast('Данные обновлены', 'ok', 1600);
+    } finally {
+      setTimeout(function () { if (btn) btn.classList.remove('spinning'); }, 500);
+    }
+  }
+
+  /* ------------------------------ привязки ------------------------------- */
+
+  function bindUi() {
+    var nav = $('nav');
+    if (nav) {
+      nav.addEventListener('click', function (e) {
+        var btn = e.target && e.target.closest ? e.target.closest('.nav-item') : null;
+        if (btn && btn.dataset.view) activate(btn.dataset.view);
+      });
+    }
+
+    var burger = $('burger');
+    if (burger) burger.addEventListener('click', function () {
+      var sb = $('sidebar');
+      if (sb && sb.classList.contains('open')) closeSidebar();
+      else openSidebar();
+    });
+    var scrim = $('scrim');
+    if (scrim) scrim.addEventListener('click', closeSidebar);
+
+    var refreshBtn = $('btn-refresh');
+    if (refreshBtn) refreshBtn.addEventListener('click', refreshAll);
+
+    var bannerRetry = $('banner-retry');
+    if (bannerRetry) bannerRetry.addEventListener('click', function () { pollState(true); });
+    var bannerSettings = $('banner-settings');
+    if (bannerSettings) bannerSettings.addEventListener('click', function () { activate('settings'); });
+
+    var btnBest = $('btn-best');
+    if (btnBest) btnBest.addEventListener('click', switchToBest);
+    var btnTestAll = $('btn-test-all');
+    if (btnTestAll) btnTestAll.addEventListener('click', function () { runTest(allNodeNames()); });
+    var btnSubUpdate = $('btn-sub-update');
+    if (btnSubUpdate) btnSubUpdate.addEventListener('click', function () { refreshSubscriptions(btnSubUpdate); });
+    var btnProvidersUpdateAll = $('btn-providers-update-all');
+    if (btnProvidersUpdateAll) btnProvidersUpdateAll.addEventListener('click', function () { refreshSubscriptions(btnProvidersUpdateAll); });
+
+    var srvSearch = $('srv-search');
+    if (srvSearch) srvSearch.addEventListener('input', function () {
+      ui.servers.search = srvSearch.value;
+      renderServers();
+    });
+    var srvTestAll = $('btn-srv-test-all');
+    if (srvTestAll) srvTestAll.addEventListener('click', function () { runTest(allNodeNames()); });
+
+    var connSearch = $('conn-search');
+    if (connSearch) connSearch.addEventListener('input', function () {
+      ui.conns.search = connSearch.value;
+      renderConnections();
+    });
+    var closeAllBtn = $('btn-conn-close-all');
+    if (closeAllBtn) closeAllBtn.addEventListener('click', closeAllConnections);
+
+    var connWrap = $('conn-table-wrap');
+    if (connWrap) {
+      connWrap.addEventListener('mouseenter', function () {
+        if (!canHover()) return;
+        ui.conns.hover = true;
+        renderConnMeta();
+      });
+      connWrap.addEventListener('mouseleave', function () {
+        if (!ui.conns.hover) return;
+        ui.conns.hover = false;
+        renderConnMeta();
+        if (ui.view === 'connections' && !document.hidden) loadConnections();
+      });
+    }
+
+    var rulesSearch = $('rules-search');
+    if (rulesSearch) rulesSearch.addEventListener('input', function () {
+      ui.rules.search = rulesSearch.value;
+      renderRules();
+    });
+
+    var jrnTabs = $('jrn-tabs');
+    if (jrnTabs) jrnTabs.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-tab]') : null;
+      if (b) setJournalTab(b.dataset.tab);
+    });
+    var evFilters = $('ev-filters');
+    if (evFilters) evFilters.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest ? e.target.closest('[data-filter]') : null;
+      if (!b) return;
+      ui.journal.filter = b.dataset.filter;
+      renderEvents();
+    });
+    var logLevel = $('log-level');
+    if (logLevel) logLevel.addEventListener('change', function () {
+      ui.journal.logLevel = logLevel.value;
+      if (ui.journal.tab === 'logs' && ui.view === 'journal') startLogStream();
+    });
+    var logAutoscroll = $('log-autoscroll');
+    if (logAutoscroll) logAutoscroll.addEventListener('change', function () {
+      ui.journal.autoscroll = !!logAutoscroll.checked;
+    });
+    var logClear = $('btn-log-clear');
+    if (logClear) logClear.addEventListener('click', function () {
+      ui.journal.logs = [];
+      var list = $('log-list');
+      if (list) clear(list);
+      setLogStatus('очищено · ' + (ui.journal.tab === 'logs' ? 'ожидание строк' : ''));
+    });
+
+    var apiApply = $('btn-api-apply');
+    if (apiApply) apiApply.addEventListener('click', applyApi);
+    var apiReset = $('btn-api-reset');
+    if (apiReset) apiReset.addEventListener('click', resetApi);
+    var apiTest = $('btn-api-test');
+    if (apiTest) apiTest.addEventListener('click', testDaemon);
+    var apiInput = $('set-api');
+    if (apiInput) apiInput.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); applyApi(); }
+    });
+
+    ['wd-enabled', 'wd-interval', 'wd-fails', 'wd-group'].forEach(function (id) {
+      var node = $(id);
+      if (node) node.addEventListener('change', markWdDirty);
+      if (node && (node.type === 'number' || node.tagName === 'INPUT') && node.type !== 'checkbox') {
+        node.addEventListener('input', markWdDirty);
+      }
+    });
+    var wdTargets = $('wd-targets');
+    if (wdTargets) wdTargets.addEventListener('input', markWdDirty);
+    var wdAdd = $('btn-wd-add');
+    if (wdAdd) wdAdd.addEventListener('click', function () {
+      var box = $('wd-targets');
+      if (!box) return;
+      box.appendChild(buildTargetRow('', ''));
+      markWdDirty();
+      var rows = box.querySelectorAll('.target-row');
+      var last = rows[rows.length - 1];
+      var input = last ? last.querySelector('.t-name') : null;
+      if (input) input.focus();
+    });
+    var wdSave = $('btn-wd-save');
+    if (wdSave) wdSave.addEventListener('click', saveWatchdog);
+
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) {
+        stopTrafficStream();
+        stopLogStream();
+        return;
+      }
+      if (!streams.traffic && !document.hidden) startTrafficStream();
+      if (!ui.link.ok) pollState();
+      if (ui.view === 'connections') loadConnections();
+      if (ui.view === 'journal' && ui.journal.tab === 'logs') startLogStream();
+    });
+
+    window.addEventListener('online', function () { pollState(); });
+    window.addEventListener('hashchange', function () {
+      var h = (location.hash || '').replace(/^#/, '');
+      if (h && VIEWS.indexOf(h) >= 0 && h !== ui.view) activate(h);
+    });
+
+    document.addEventListener('keydown', function (e) {
+      var modal = $('modal-root');
+      if (modal && !modal.hidden) return;
+      if (e.key === 'Escape') { closeSidebar(); return; }
+      var t = e.target || {};
+      var tag = (t.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'select' || tag === 'textarea' || t.isContentEditable) return;
+      if (e.key === 'r' || e.key === 'R' || e.key === 'к' || e.key === 'К') {
+        e.preventDefault();
+        refreshAll();
+      } else if (e.key === '/') {
+        var s = document.querySelector('.view:not([hidden]) .input.search');
+        if (s) { e.preventDefault(); s.focus(); }
+      }
+    });
+  }
+
+  /* --------------------------------- старт ------------------------------- */
+
+  function init() {
+    ui.api = normBase(readSavedApi()) || defaultBase();
+    ui.pendingSelect = Object.create(null);
+    bindUi();
+    initSettings();
+    renderTopbar();
+
+    var hash = (location.hash || '').replace(/^#/, '');
+    activate(VIEWS.indexOf(hash) >= 0 ? hash : 'overview', true);
+
+    startPolling();
+    pollState();
+    startTrafficStream();
+    renderSpeedCard();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
