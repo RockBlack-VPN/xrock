@@ -31,15 +31,23 @@ type groupResp struct {
 	Icon string   `json:"icon"`
 }
 
+// apiSubInfo — подписка в том виде, как её ждёт UI (ключи в нижнем регистре).
+type apiSubInfo struct {
+	Upload   int64 `json:"upload"`
+	Download int64 `json:"download"`
+	Total    int64 `json:"total"`
+	Expire   int64 `json:"expire"`
+}
+
 type providerResp struct {
-	Name             string   `json:"name"`
-	Type             string   `json:"type"`
-	VehicleType      string   `json:"vehicleType"`
-	UpdatedAt        string   `json:"updatedAt"`
-	TestURL          string   `json:"testUrl"`
-	Interval         int      `json:"interval"`
-	ProxyCount       int      `json:"proxyCount"`
-	SubscriptionInfo *subInfo `json:"subscriptionInfo"`
+	Name             string      `json:"name"`
+	Type             string      `json:"type"`
+	VehicleType      string      `json:"vehicleType"`
+	UpdatedAt        string      `json:"updatedAt"`
+	TestURL          string      `json:"testUrl"`
+	Interval         int         `json:"interval"`
+	ProxyCount       int         `json:"proxyCount"`
+	SubscriptionInfo *apiSubInfo `json:"subscriptionInfo"`
 }
 
 type watchdogResp struct {
@@ -58,9 +66,11 @@ type watchdogResp struct {
 }
 
 type trafficResp struct {
-	Up    int64 `json:"up"`
-	Down  int64 `json:"down"`
-	Conns int64 `json:"conns"`
+	Up        int64 `json:"up"`        // скорость сейчас, байт/с
+	Down      int64 `json:"down"`      // скорость сейчас, байт/с
+	UpTotal   int64 `json:"upTotal"`   // всего отдано
+	DownTotal int64 `json:"downTotal"` // всего скачано
+	Conns     int64 `json:"conns"`
 }
 
 type stateResp struct {
@@ -137,10 +147,19 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 			if strings.EqualFold(p.VehicleType, "compatible") {
 				continue
 			}
+			var si *apiSubInfo
+			if p.SubscriptionInfo != nil {
+				si = &apiSubInfo{
+					Upload:   p.SubscriptionInfo.Upload,
+					Download: p.SubscriptionInfo.Download,
+					Total:    p.SubscriptionInfo.Total,
+					Expire:   p.SubscriptionInfo.Expire,
+				}
+			}
 			resp.Providers = append(resp.Providers, providerResp{
 				Name: name, Type: p.Type, VehicleType: p.VehicleType, UpdatedAt: p.UpdatedAt,
 				TestURL: p.TestURL, Interval: p.Interval, ProxyCount: len(p.Proxies),
-				SubscriptionInfo: p.SubscriptionInfo,
+				SubscriptionInfo: si,
 			})
 		}
 		sort.Slice(resp.Providers, func(i, j int) bool { return resp.Providers[i].Name < resp.Providers[j].Name })
@@ -157,7 +176,7 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 		Current: a.curName, CurrentOK: a.curOK, LastRound: a.lastRound, Running: a.running,
 		Targets: s.Targets, LastCheck: a.lastCheck, ConsecFail: a.consecFail,
 	}
-	resp.Traffic = trafficResp{Up: a.traffic.UpTotal, Down: a.traffic.DownTotal}
+	resp.Traffic = trafficResp{Up: a.traffic.Up, Down: a.traffic.Down, UpTotal: a.traffic.UpTotal, DownTotal: a.traffic.DownTotal, Conns: a.traffic.Conns}
 	a.mu.Unlock()
 	resp.Watchdog.Dead = a.deadList()
 	if resp.Watchdog.Dead == nil {
