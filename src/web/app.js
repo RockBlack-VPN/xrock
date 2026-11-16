@@ -988,8 +988,8 @@
     var chipMihomo = $('chip-mihomo');
     if (chipDaemon) {
       var daemonVer = st ? (st.version || '—') : (ui.link.daemonOk ? (ui.link.daemonVersion || '?') : '—');
-      chipDaemon.textContent = 'демон ' + daemonVer;
-      chipDaemon.title = 'Версия демона xrock';
+      chipDaemon.textContent = (LANG === 'en' ? 'daemon ' : 'демон ') + daemonVer;
+      chipDaemon.title = LANG === 'en' ? 'xrock daemon version' : 'Версия демона xrock';
     }
     if (chipMihomo) {
       clear(chipMihomo);
@@ -1001,7 +1001,7 @@
             text: ' · ' + String(st.mihomo.api).replace(/^https?:\/\//, '')
           }));
         }
-        if (st.mihomo.secret) chipMihomo.appendChild(el('span', { class: 'mihomo-secret', text: ' · ключ' }));
+        if (st.mihomo.secret) chipMihomo.appendChild(el('span', { class: 'mihomo-secret', text: LANG === 'en' ? ' · secret' : ' · ключ' }));
         chipMihomo.title = 'Clash API: ' + (st.mihomo.api || '—') + (st.mihomo.secret ? ' (с secret)' : '');
       } else {
         chipMihomo.textContent = 'mihomo —';
@@ -1184,6 +1184,253 @@
       if (!streams.traffic && !document.hidden) startTrafficStream();
     }
     renderTopbar();
+  }
+
+  /* ------------------------------- язык ---------------------------------- */
+
+  var LANG_KEY = 'xrock.lang';
+  var LANG = 'ru';
+  try { LANG = localStorage.getItem(LANG_KEY) === 'en' ? 'en' : 'ru'; } catch (e) { LANG = 'ru'; }
+  var RU_TEXT = typeof WeakMap === 'function' ? new WeakMap() : null;
+
+  // Ключ — русский текст как он есть в разметке; значение — английский.
+  var EN = {
+    'Обзор': 'Overview',
+    'Серверы': 'Servers',
+    'Соединения': 'Connections',
+    'Правила': 'Rules',
+    'Подписка': 'Subscription',
+    'Журнал': 'Journal',
+    'Настройки': 'Settings',
+    'Демон': 'Daemon',
+    'демон —': 'daemon —',
+    'демон на связи': 'daemon online',
+    'mihomo не отвечает': 'mihomo offline',
+    'подключение…': 'connecting…',
+    'Демон недоступен': 'Daemon unavailable',
+    'Повторить': 'Retry',
+    'Меню': 'Menu',
+    'Переключить на лучший': 'Switch to best',
+    'Проверить все серверы': 'Test all servers',
+    'Обновить подписку': 'Update subscription',
+    'Текущий сервер': 'Current server',
+    'Топ прокси': 'Top proxies',
+    'Проверить': 'Test',
+    'Сторож': 'Watchdog',
+    'Выключить': 'Disable',
+    'Включить': 'Enable',
+    'Скорость': 'Speed',
+    'Роутер': 'Router',
+    'Проверить все': 'Test all',
+    'Проверить задержку': 'Test delay',
+    'Все серверы': 'All servers',
+    'Выбрать': 'Select',
+    'Открыть соединения': 'Open connections',
+    'Открыть подписку': 'Open subscription',
+    'Проверить группу': 'Test group',
+    'тест… 0 с': 'testing… 0 s',
+    'Нет данных о группах. Демон ещё не прислал состояние.': 'No group data yet — the daemon has not sent state.',
+    'Поиск по имени в группе…': 'Search by group name…',
+    'задержка через прокси': 'delay via proxy',
+    'состояние': 'status',
+    'цели проверки': 'probe targets',
+    'стабилен': 'stable',
+    'последний замер': 'last probe',
+    'узлов в группе': 'nodes in group',
+    'протокол': 'protocol',
+    'скачивание': 'download',
+    'отдача': 'upload',
+    'активных': 'active',
+    'скачано': 'downloaded',
+    'отдано': 'uploaded',
+    'температура': 'temperature',
+    'uptime': 'uptime',
+    'load average': 'load average',
+    'Память': 'Memory',
+    'Ядра и архитектура': 'Cores & arch',
+    'Модель': 'Model',
+    'Узлов': 'Nodes',
+    'Трафик': 'Traffic',
+    'Истекает': 'Expires',
+    'Обновлён': 'Updated',
+    'использовано': 'used',
+    'Смена ссылки подписки': 'Subscription link',
+    'Новая ссылка': 'New link',
+    'Сохранить': 'Save',
+    'Отмена': 'Cancel',
+    'Закрыть всё': 'Close all',
+    'Закрыть': 'Close',
+    'Обновить': 'Update',
+    'Обновить всё': 'Refresh all',
+    'Очистить': 'Clear',
+    'Применить': 'Apply',
+    'Проверить связь': 'Check connection',
+    'Сбросить': 'Reset',
+    'Сортировка': 'Sorting',
+    'Устройство': 'Device',
+    'Все устройства': 'All devices',
+    'Хост': 'Host',
+    'Правило': 'Rule',
+    'Цепочка': 'Chain',
+    'Время': 'Time',
+    'Тип': 'Type',
+    'Содержимое': 'Content',
+    'Куда идёт': 'Target',
+    'Нет активных соединений': 'No active connections',
+    'Правила не загружены': 'Rules not loaded',
+    'Поиск по хосту или правилу…': 'Search host or rule…',
+    'Поиск по правилу…': 'Search rule…',
+    'Провайдеры подписок не найдены.': 'No subscription providers found.',
+    'Мёртвые узлы': 'Dead nodes',
+    'по данным сторожа': 'per watchdog',
+    'по последнему проксированному замеру': 'by last proxied probe',
+    'События': 'Events',
+    'Логи mihomo': 'mihomo logs',
+    'Все': 'All',
+    'Сбои': 'Failures',
+    'Переключения': 'Switches',
+    'Событий пока нет.': 'No events yet.',
+    'автоскролл': 'autoscroll',
+    'поток не подключён': 'stream not connected',
+    'Оформление': 'Appearance',
+    'тёмная': 'dark',
+    'Подключение к демону': 'Daemon connection',
+    'Адрес демона': 'Daemon address',
+    'По умолчанию:': 'Default:',
+    'Сторож выключен': 'Watchdog is off',
+    'Сторож включён': 'Watchdog is on',
+    'автопереключений нет — сервер выбирается вручную': 'no auto-switching — you pick the server',
+    'Включить сторожа': 'Enable watchdog',
+    'Выключить сторожа': 'Disable watchdog',
+    'Интервал проверки, сек': 'Check interval, sec',
+    'Сбоев до переключения': 'Failures before switch',
+    'Группа': 'Group',
+    'Цели проверки': 'Probe targets',
+    '+ Добавить цель': '+ Add target',
+    'Обновления': 'Updates',
+    'Панель xrock': 'xrock panel',
+    'Ядро mihomo': 'mihomo core',
+    'Обновить ядро mihomo': 'Update mihomo core',
+    'Обновить панель': 'Update panel',
+    'Проверить версии': 'Check versions',
+    'Соединение': 'Connection',
+    'Событие': 'Event',
+    'Подключить': 'Connect',
+    'Позже': 'Later',
+    'Укажите адрес демона xrock — обычно он на том же роутере, порт': 'Enter the xrock daemon address — usually on the same router, port',
+    'Адрес запомнится в этом браузере.': 'The address will be remembered in this browser.',
+    'сам. Если секрета там нет — панель тоже работает, вводить ничего не нужно.': 'itself. If there is no secret there, the panel works as well — nothing to enter.',
+    'Укажите адрес демона': 'Enter the daemon address',
+    'проверяю связь…': 'checking connection…',
+    'Демон на связи': 'Daemon is online',
+    'Не удалось подключиться': 'Could not connect',
+    'загрузка': 'loading',
+    'нет данных': 'no data',
+    'Нет данных': 'No data',
+    'ошибка': 'error',
+    'включён': 'on',
+    'выключен': 'off',
+    'Включён': 'On',
+    'Выключен': 'Off',
+    'Интервал': 'Interval',
+    'текущий:': 'current:',
+    'Тёмная': 'Dark', 'текущая, по умолчанию': 'current, default',
+    'Светлая': 'Light', 'дневная, высокий контраст': 'daylight, high contrast',
+    'Полночь': 'Midnight', 'глубокий синий': 'deep blue',
+    'северная палитра': 'northern palette',
+    'Океан': 'Ocean', 'бирюзовая, голубой акцент': 'teal, cyan accent',
+    'Изумруд': 'Emerald', 'зелёная': 'green',
+    'Золото': 'Gold', 'тёплая, янтарная': 'warm, amber',
+    'Аметист': 'Amethyst', 'фиолетовая': 'violet',
+    'Роза': 'Rose', 'розово-красная': 'rose-red',
+    'Как в системе': 'System', 'следовать теме ОС': 'follow the OS theme',
+    'Обновить всё': 'Refresh all',
+    'Осталось': 'Left', 'без срока': 'no expiry', 'истекла': 'expired',
+    'Лимит не ограничен': 'Unlimited',
+    'обновлено': 'updated', 'всего': 'total', 'правил:': 'rules:',
+    'устройство': 'device', 'устройства': 'devices', 'устройств': 'devices',
+    'день': 'day', 'дня': 'days', 'дней': 'days',
+    'Активных': 'Active',
+    'Проверить задержку всех узлов группы через прокси': 'Test every node in the group through the proxy',
+    'Сортировка': 'Sorting',
+    'по задержке': 'by delay', 'по имени': 'by name',
+    'Стабилен': 'Stable',
+    'Отдано ↑': 'Uploaded ↑', 'Скачано ↓': 'Downloaded ↓',
+    'группа': 'group',
+    'узлов': 'nodes',
+    'узел': 'node',
+    'Последняя проверка': 'Last check',
+    'Поток': 'Loop',
+    'Мёртвых узлов': 'Dead nodes',
+    'идёт проверка': 'checking now',
+    'ожидание': 'waiting',
+    'остановлен': 'stopped',
+    'Последняя проверка была давно — возможно, сторож не работает.': 'Last check was long ago — the watchdog may be stuck.',
+    'Сторож выключен: автопереключения не выполняются.': 'Watchdog is off: no auto-switching.',
+    'Изменить ссылку': 'Change link',
+    'Проверить ASN': 'Look up ASN',
+    'Закрыть соединение': 'Close connection',
+    'Страна': 'Country',
+    'Провайдер': 'Provider',
+    'Трафик по соединению': 'Connection traffic',
+    'Правило и цепочка': 'Rule and chain',
+    'Событие журнала': 'Journal event',
+    'Живой лог mihomo': 'mihomo live log',
+    'Строка лога mihomo': 'mihomo log line'
+  };
+
+  function t(ru) {
+    return LANG === 'en' ? (EN[ru] || ru) : ru;
+  }
+
+  function applyLang(root) {
+    var node = root || document.body;
+    if (!node) return;
+    if (typeof document.createTreeWalker !== 'function') return;
+    var walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+    var list = [];
+    var n;
+    while ((n = walker.nextNode())) list.push(n);
+    for (var i = 0; i < list.length; i++) {
+      var tn = list[i];
+      var p = tn.parentNode;
+      if (!p) continue;
+      var tag = p.nodeName;
+      if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'CODE' || tag === 'PRE' || tag === 'TEXTAREA') continue;
+      var raw = tn.nodeValue;
+      if (!raw || !raw.trim()) continue;
+      if (LANG === 'en') {
+        var trimmed = raw.trim();
+        var en = EN[trimmed];
+        if (en === undefined) continue;
+        if (RU_TEXT && !RU_TEXT.has(tn)) RU_TEXT.set(tn, raw);
+        var lead = raw.match(/^\s*/)[0];
+        var tail = raw.match(/\s*$/)[0];
+        tn.nodeValue = lead + en + tail;
+      } else if (RU_TEXT && RU_TEXT.has(tn)) {
+        tn.nodeValue = RU_TEXT.get(tn);
+        RU_TEXT.delete(tn);
+      }
+    }
+  }
+
+  function renderLangBtn() {
+    var btn = $('btn-lang');
+    if (!btn) return;
+    btn.textContent = LANG === 'en' ? 'RU' : 'EN';
+    btn.title = LANG === 'en' ? 'Русский язык' : 'English language';
+    btn.setAttribute('aria-label', btn.title);
+  }
+
+  function setLang(lang) {
+    LANG = lang === 'en' ? 'en' : 'ru';
+    try { localStorage.setItem(LANG_KEY, LANG); } catch (e) {}
+    document.documentElement.lang = LANG;
+    document.title = LANG === 'en' ? 'xrock — mihomo panel' : 'xrock — панель mihomo';
+    renderLangBtn();
+    renderTopbar();
+    if (ui.view) renderActive();
+    applyLang();
   }
 
   /* ------------------------------ toast/modal ---------------------------- */
@@ -1794,6 +2041,7 @@
   /* ------------------------------- рендер -------------------------------- */
 
   function renderActive() {
+    if (LANG === 'en') setTimeout(function () { applyLang(); }, 0);
     if (ui.view === 'overview') renderOverview();
     else if (ui.view === 'servers') renderServers();
     else if (ui.view === 'connections') renderConnections();
@@ -1964,7 +2212,7 @@
       setBadge(badge, 'bad', '0 живых');
       return;
     }
-    setBadge(badge, 'ok', tc.alive.length + ' живых из ' + tc.total);
+    setBadge(badge, 'ok', tc.alive.length + ' online / ' + tc.total);
 
     var cur = currentChainNode();
     var selectable = isSelector(tc.group);
@@ -1990,8 +2238,10 @@
     body.appendChild(list);
 
     var tail = [];
-    if (tc.alive.length > 8) tail.push('ещё ' + (tc.alive.length - 8) + ' живых — на вкладке «Серверы»');
-    if (tc.dead.length) tail.push('не отвечают: ' + tc.dead.length);
+    if (tc.alive.length > 8) tail.push(LANG === 'en'
+      ? (tc.alive.length - 8) + ' more online — see the Servers tab'
+      : 'ещё ' + (tc.alive.length - 8) + ' живых — на вкладке «Серверы»');
+    if (tc.dead.length) tail.push((LANG === 'en' ? 'offline: ' : 'не отвечают: ') + tc.dead.length);
     if (tail.length) body.appendChild(el('div', { class: 'hint', text: tail.join(' · ') }));
   }
 
@@ -2078,11 +2328,11 @@
 
     var healthText, healthCls;
     if (stat) {
-      if (stat.ok === true) { healthText = 'здоров'; healthCls = 'ok'; }
-      else if (stat.ok === false) { healthText = 'сбои' + (num(stat.fails) ? ': ' + num(stat.fails) : ''); healthCls = 'bad'; }
+      if (stat.ok === true) { healthText = 'online'; healthCls = 'ok'; }
+      else if (stat.ok === false) { healthText = 'offline' + (num(stat.fails) ? ' · ' + num(stat.fails) : ''); healthCls = 'bad'; }
       else { healthText = 'нет данных'; healthCls = 'muted'; }
     } else if (tested) {
-      healthText = tested.err ? 'не отвечает' : 'жив';
+      healthText = tested.err ? 'offline' : 'online';
       healthCls = tested.err ? 'bad' : 'ok';
     } else {
       healthText = 'нет данных';
@@ -2162,8 +2412,8 @@
     renderWdSwitch(!!wd.enabled);
     var badge = $('wd-badge-overview');
     if (!wd.enabled) setBadge(badge, 'muted', 'выключен');
-    else if (wd.currentOK === false) setBadge(badge, 'bad', 'сбои');
-    else setBadge(badge, 'ok', 'включён');
+    else if (wd.currentOK === false) setBadge(badge, 'bad', 'offline');
+    else setBadge(badge, 'ok', 'online');
 
     var nowSec = Math.floor(Date.now() / 1000);
     var lastT = wd.lastCheck ? wd.lastCheck.t : wd.lastRound;
@@ -2178,8 +2428,9 @@
     body.appendChild(rows);
 
     if (num(wd.manualLeft) > 0) {
-      body.appendChild(el('div', { class: 'hint' },
-        'Вы выбрали сервер вручную — сторож не переключит его ещё ' + Math.ceil(num(wd.manualLeft) / 60) + ' мин.'));
+      body.appendChild(el('div', { class: 'hint' }, LANG === 'en'
+        ? 'You picked this server manually — the watchdog will not switch it for ' + Math.ceil(num(wd.manualLeft) / 60) + ' min.'
+        : 'Вы выбрали сервер вручную — сторож не переключит его ещё ' + Math.ceil(num(wd.manualLeft) / 60) + ' мин.'));
     }
     if (lastT && (nowSec - num(lastT)) > Math.max(90, num(wd.intervalSec) * 6)) {
       body.appendChild(el('div', { class: 'hint' }, 'Последняя проверка была давно — возможно, сторож не работает.'));
@@ -2408,9 +2659,10 @@
   function expireBadge(days) {
     if (days === null) return { cls: 'muted', text: 'без срока' };
     if (days < 0) return { cls: 'bad', text: 'истекла' };
-    if (days <= 3) return { cls: 'bad', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
-    if (days <= 10) return { cls: 'warn', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
-    return { cls: 'muted', text: days + ' ' + plural(days, ['день', 'дня', 'дней']) };
+    var daysTxt = LANG === 'en' ? days + ' ' + plural(days, ['day', 'days', 'days']) : days + ' ' + plural(days, ['день', 'дня', 'дней']);
+    if (days <= 3) return { cls: 'bad', text: daysTxt };
+    if (days <= 10) return { cls: 'warn', text: daysTxt };
+    return { cls: 'muted', text: daysTxt };
   }
 
   function renderSubCard(st) {
@@ -2667,26 +2919,30 @@
     var nowIsGroup = isGroupName(nowName);
     var nowCode = nowIsGroup ? '' : countryFromName(nowName);
     var cur = el('span', { class: 'srv-cur', title: 'Текущий узел группы' }, [
-      el('span', { class: 'muted', text: 'текущий:' }),
+      el('span', { class: 'muted', text: t('текущий:') }),
       nowIsGroup ? groupIconEl(nowName, 'sm') : (nowCode ? flagEl(nowCode, 'sm') : null),
       el('b', { text: nodeLabel(nowName) || '—' })
     ]);
 
     box.appendChild(el('div', { class: 'srv-panel-title' }, [
       el('h2', null, [groupIconEl(group.name), el('span', { text: group.name })]),
-      el('span', { class: 'badge muted', text: group.type || 'группа' }),
-      el('span', { class: 'badge muted', text: nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']) }),
+      el('span', { class: 'badge muted', text: group.type || t('группа') }),
+      el('span', { class: 'badge muted', text: LANG === 'en' ? plural(nodes, ['node', 'nodes', 'nodes']) : nodes + ' ' + plural(nodes, ['узел', 'узла', 'узлов']) }),
       cur,
       selectable ? null : el('span', { class: 'badge warn', text: 'авто' })
     ]));
 
     box.appendChild(el('div', { class: 'srv-panel-tools' }, [
-      el('span', { class: 'srv-note', text: selectable
-        ? 'клик — сделать активным · правый клик / удержание — тест · задержка — реальный запрос через узел'
-        : 'группа выбирает узел автоматически · тест — правый клик / удержание · задержка — реальный запрос через узел' }),
+      el('span', { class: 'srv-note', text: LANG === 'en'
+        ? (selectable
+          ? 'click — make active · right click / hold — test · delay is a real request through the node'
+          : 'group picks a node automatically · test — right click / hold · delay is a real request through the node')
+        : (selectable
+          ? 'клик — сделать активным · правый клик / удержание — тест · задержка — реальный запрос через узел'
+          : 'группа выбирает узел автоматически · тест — правый клик / удержание · задержка — реальный запрос через узел') }),
       el('div', { class: 'seg small', role: 'group', 'aria-label': 'Сортировка' }, [
-        sortBtn('delay', 'по задержке'),
-        sortBtn('name', 'по имени')
+        sortBtn('delay', LANG === 'en' ? 'by delay' : 'по задержке'),
+        sortBtn('name', LANG === 'en' ? 'by name' : 'по имени')
       ]),
       el('button', {
         type: 'button', class: 'btn small ghost',
@@ -2840,7 +3096,7 @@
     var meta = el('span', { class: 'ncard-meta' }, [
       el('span', { class: 'ncard-type', text: isSub ? 'группа · ' + nodeTypeText(name) : nodeTypeText(name) }),
       !isSub && proxy && proxy.udp ? el('span', { class: 'ncard-udp', text: 'UDP' }) : null,
-      dead ? el('span', { class: 'badge bad', text: 'мёртв' }) : null
+      dead ? el('span', { class: 'badge bad', text: 'offline' }) : null
     ]);
     if (isSub && target && target !== name) {
       meta.appendChild(el('span', {
@@ -3410,8 +3666,8 @@
     meta.style.color = '';
     meta.className = 'muted small';
     var parts = [];
-    if (ui.conns.at) parts.push('обновлено ' + fmtClock(ui.conns.at / 1000));
-    parts.push('всего ↑ ' + fmtBytes(ui.conns.up) + ' · ↓ ' + fmtBytes(ui.conns.down));
+    if (ui.conns.at) parts.push((LANG === 'en' ? 'updated ' : 'обновлено ') + fmtClock(ui.conns.at / 1000));
+    parts.push((LANG === 'en' ? 'total ' : 'всего ') + '↑ ' + fmtBytes(ui.conns.up) + ' · ↓ ' + fmtBytes(ui.conns.down));
     meta.textContent = parts.join(' · ');
   }
 
@@ -3992,7 +4248,11 @@
     if (meta) {
       meta.textContent = ui.rules.err
         ? 'ошибка: ' + ui.rules.err
-        : (ui.rules.at ? 'правил: ' + ui.rules.list.length + ' · обновлено ' + fmtClock(ui.rules.at / 1000) : 'загрузка…');
+        : (ui.rules.at
+          ? (LANG === 'en'
+            ? 'rules: ' + ui.rules.list.length + ' · updated ' + fmtClock(ui.rules.at / 1000)
+            : 'правил: ' + ui.rules.list.length + ' · обновлено ' + fmtClock(ui.rules.at / 1000))
+          : (LANG === 'en' ? 'loading…' : 'загрузка…'));
       meta.style.color = ui.rules.err ? 'var(--bad)' : '';
     }
     if (wrap) wrap.scrollTop = keepScroll;
@@ -4018,11 +4278,17 @@
     body.appendChild(el('div', { class: 'kv' }, [
       kvRow('Узлов', String(num(p.proxyCount))),
       kvRow('Истекает', inf.expire ? fmtTime(inf.expire) : '—', inf.expire ? 'unix ' + inf.expire : ''),
-      kvRow('Осталось', inf.days === null ? 'без срока' : (inf.days < 0 ? 'истекла' : inf.days + ' ' + plural(inf.days, ['день', 'дня', 'дней']))),
-      kvRow('Скачано', fmtBytes(inf.download), inf.download + ' Б'),
-      kvRow('Отдано', fmtBytes(inf.upload), inf.upload + ' Б'),
-      kvRow('Лимит', inf.unlimited ? 'не ограничен' : fmtBytes(inf.total), inf.total + ' Б'),
-      kvRow('Обновлён', p.updatedAt ? fmtAgo(parseIsoSeconds(p.updatedAt)) : '—', p.updatedAt || ''),
+      kvRow(LANG === 'en' ? 'Left' : 'Осталось', inf.days === null
+        ? (LANG === 'en' ? 'no expiry' : 'без срока')
+        : (inf.days < 0
+          ? (LANG === 'en' ? 'expired' : 'истекла')
+          : inf.days + ' ' + (LANG === 'en' ? plural(inf.days, ['day', 'days', 'days']) : plural(inf.days, ['день', 'дня', 'дней'])))),
+      kvRow(LANG === 'en' ? 'Downloaded' : 'Скачано', fmtBytes(inf.download), inf.download + ' Б'),
+      kvRow(LANG === 'en' ? 'Uploaded' : 'Отдано', fmtBytes(inf.upload), inf.upload + ' Б'),
+      kvRow(LANG === 'en' ? 'Limit' : 'Лимит', inf.unlimited
+        ? (LANG === 'en' ? 'unlimited' : 'не ограничен')
+        : fmtBytes(inf.total), inf.total + ' Б'),
+      kvRow(LANG === 'en' ? 'Updated' : 'Обновлён', p.updatedAt ? fmtAgo(parseIsoSeconds(p.updatedAt)) : '—', p.updatedAt || ''),
       kvRow('Интервал', p.interval ? p.interval + ' с' : '—'),
       kvRow('URL проверки', p.testUrl || '—', p.testUrl || '')
     ]));
@@ -5198,6 +5464,8 @@
       setLogStatus('очищено · ' + (ui.journal.tab === 'logs' ? 'ожидание строк' : ''));
     });
 
+    var langBtn = $('btn-lang');
+    if (langBtn) langBtn.addEventListener('click', function () { setLang(LANG === 'en' ? 'ru' : 'en'); });
     var setupBtn = $('btn-setup-connect');
     if (setupBtn) setupBtn.addEventListener('click', connectFromSetup);
     var setupSkip = $('btn-setup-skip');
@@ -5310,6 +5578,13 @@
   function init() {
     ui.api = normBase(readSavedApi()) || defaultBase();
     ui.pendingSelect = Object.create(null);
+    document.documentElement.lang = LANG;
+    document.title = LANG === 'en' ? 'xrock — mihomo panel' : 'xrock — панель mihomo';
+    renderLangBtn();
+    if (LANG === 'en') {
+      // динамические части (таблицы, карточки) перерисовываются чаще, чем renderActive
+      setInterval(function () { if (!document.hidden) applyLang(); }, 1500);
+    }
     applyTheme(readThemeMode(), false);
     watchSystemTheme();
     applyStaticIcons();
