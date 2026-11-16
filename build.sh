@@ -9,7 +9,6 @@ rm -rf "$DIST"
 mkdir -p "$DIST"
 cd src
 
-targets="arm64:mips:mipsle"
 for arch in arm64 mips mipsle; do
   case "$arch" in
     arm64)  out="xrock-arm64" ;;
@@ -22,7 +21,7 @@ for arch in arm64 mips mipsle; do
 done
 
 cd ..
-# архив: бинарник + установщик + README (как xray-selector)
+# архив: бинарники + установщик + UI + README
 STAGE="$DIST/stage"
 mkdir -p "$STAGE/xrock"
 cp "$DIST/xrock-arm64"  "$STAGE/xrock/xrock-arm64"
@@ -30,8 +29,10 @@ cp "$DIST/xrock-mips"   "$STAGE/xrock/xrock-mips"
 cp "$DIST/xrock-mipsel" "$STAGE/xrock/xrock-mipsel"
 cp src/packaging/install.sh "$STAGE/xrock/install.sh"
 cp README.md "$STAGE/xrock/README.md"
+cp -r src/web "$STAGE/xrock/web"
 chmod +x "$STAGE/xrock/install.sh"
 (cd "$STAGE" && tar czf "../xrock-$VER.tar.gz" xrock)
+cp "$DIST/xrock-$VER.tar.gz" "$DIST/xrock-latest.tar.gz"   # постоянная ссылка latest/download/xrock-latest.tar.gz
 rm -rf "$STAGE"
-echo "готово: dist/xrock-$VER.tar.gz"
+echo "готово: dist/xrock-$VER.tar.gz (и dist/xrock-latest.tar.gz)"
 ls -la "$DIST"
