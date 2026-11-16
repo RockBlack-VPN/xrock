@@ -4,13 +4,14 @@
 #   dist/xrock-latest.tar.gz — то же (постоянная ссылка, для самообновления панели)
 #   dist/xrock-ui.zip        — только UI (для external-ui-url в config.yaml mihomo)
 set -e
-cd "$(dirname "$0")"
+ROOT=$(cd "$(dirname "$0")" && pwd)
+cd "$ROOT"
 VER="${1:-$(grep -m1 '^const version' src/*.go | sed 's/.*"\(.*\)".*/\1/')}"
-DIST="dist"
+DIST="$ROOT/dist"
 rm -rf "$DIST"
 mkdir -p "$DIST"
-cd src
 
+cd "$ROOT/src"
 for arch in arm64 mips mipsle; do
   case "$arch" in
     arm64)  out="xrock-arm64" ;;
@@ -19,47 +20,46 @@ for arch in arm64 mips mipsle; do
   esac
   echo "сборка $arch…"
   CGO_ENABLED=0 GOOS=linux GOARCH="$arch" \
-    go build -trimpath -ldflags="-s -w" -o "../$DIST/$out" .
+    go build -trimpath -ldflags="-s -w" -o "$DIST/$out" .
 done
 
-cad=..
-# 1. архив установки: бинарники + установщик + UI + README
-STAGE="$cad/$DIST/stage"
-rm -rf "$STAGE"
-mkdir -p "$STAGE/xrock"
-cp "$cad/$DIST/xrock-arm64"  "$STAGE/xrock/xrock-arm64"
-cp "$cad/$DIST/xrock-mips"   "$STAGE/xrock/xrock-mips"
-cp "$cad/$DIST/xrock-mipsel" "$STAGE/xrock/xrock-mipsel"
-cp "$cad/src/packaging/install.sh" "$STAGE/xrock/install.sh"
-cp "$cad/README.md" "$STAGE/xrock/README.md"
-cp -r "$cad/src/web" "$STAGE/xrock/web"
-chmod +x "$STAGE/xrock/install.sh"
-(cd "$STAGE" && tar czf "../xrock-$VER.tar.gz" xrock)
-cp "$cad/$DIST/xrock-$VER.tar.gz" "$cad/$DIST/xrock-latest.tar.gz"
-rm -rf "$STAGE"
+# 1. архив установки
+STAGE="$DIST/stage/xrock"
+rm -rf "$DIST/stage"
+mkdir -p "$STAGE"
+cp "$DIST/xrock-arm64"  "$STAGE/xrock-arm64"
+cp "$DIST/xrock-mips"   "$STAGE/xrock-mips"
+cp "$DIST/xrock-mipsel" "$STAGE/xrock-mipsel"
+cp "$ROOT/src/packaging/install.sh" "$STAGE/install.sh"
+cp "$ROOT/README.md" "$STAGE/README.md"
+cp -r "$ROOT/src/web/." "$STAGE/web/"
+chmod +x "$STAGE/install.sh"
+(cd "$DIST/stage" && tar czf "$DIST/xrock-$VER.tar.gz" xrock)
+cp "$DIST/xrock-$VER.tar.gz" "$DIST/xrock-latest.tar.gz"
+rm -rf "$DIST/stage"
 
 # 2. архив UI для external-ui-url (файлы в корне zip, как dist.zip у zashboard)
-cd "$cad/src/web"
+cd "$ROOT/src/web"
 PY=""
 for c in python3 python; do
   if command -v "$c" >/dev/null 2>&1; then PY="$c"; break; fi
 done
 if [ -n "$PY" ]; then
-  "$PY" - "$cad/$DIST/xrock-ui.zip" <<'PY'
+  "$PY" - "$DIST/xrock-ui.zip" <<'PY'
 import os, sys, zipfile
 dst = sys.argv[1]
 with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
     for name in sorted(os.listdir(".")):
-        if os.path.isfile(name) and name != "xrock-ui.zip":
+        if os.path.isfile(name):
             z.write(name, name)
 PY
 elif command -v zip >/dev/null 2>&1; then
-  zip -q -r "$cad/$DIST/xrock-ui.zip" index.html app.css app.js logo.svg manifest.webmanifest
+  zip -q -r "$DIST/xrock-ui.zip" index.html app.css app.js logo.svg manifest.webmanifest
 else
   echo "нет python3 и zip — UI-архив не собран" >&2
   exit 1
 fi
 
-cd "$cad"
-echo "готово: dist/xrock-$VER.tar.gz, dist/xrock-latest.tar.gz, dist/xrock-ui.zip"
+cd "$ROOT"
+echo "готово:"
 ls -la "$DIST"
