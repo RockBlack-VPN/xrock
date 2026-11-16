@@ -82,3 +82,56 @@ UI (статика, отдаётся mihomo по `/ui`) обращается к 
 ## Проверка живости
 
 `GET /api/ping` → `{"ok":true,"version":"0.1.0"}` (без обращения к mihomo).
+
+## Ресурсы роутера
+
+`GET /api/sys` — CPU, память, температура (обновляется опросом раз в 3–5 с):
+
+```json
+{
+  "ok": true,
+  "cpuPct": 7,
+  "load1": 0.12,
+  "memTotal": 1014996,
+  "memAvail": 496372,
+  "memUsedPct": 51,
+  "tempMax": 56.4,
+  "temps": [ { "name": "soc_thermal", "c": 56.4 }, { "name": "eth2p5g_thermal0", "c": 54.6 } ],
+  "uptimeSec": 85583,
+  "arch": "aarch64",
+  "model": "Keenetic"
+}
+```
+
+`tempMax` — максимум по всем термодатчикам `/sys/class/thermal/thermal_zone*` (целые градусы,
+как отдаёт ядро). Если датчиков нет — `tempMax: 0`.
+
+## Версии и обновления
+
+`GET /api/versions` — текущие и последние доступные версии (последние запрашиваются у GitHub
+и кешируются на 10 минут):
+
+```json
+{
+  "xrock":  { "current": "0.1.0", "latest": "0.2.0", "updateAvailable": true },
+  "mihomo": { "current": "v1.19.34", "latest": "v1.19.34", "updateAvailable": false },
+  "checkedAt": 1794736345
+}
+```
+
+`POST /api/upgrade/core` — обновить ядро mihomo через XKeen (`xkeen -um auto`) и перезапустить
+Xray/mihomo. Синхронный, может занять до 2–3 минут; ответ:
+
+```json
+{ "ok": true, "before": "v1.19.34", "after": "v1.19.36",
+  "log": ["Обновляю Mihomo…", "…"] }
+```
+При ошибке — `{"ok":false,"error":"…","log":[…]}` и код 502; старый бинарник продолжает работать.
+
+`POST /api/upgrade/panel` — обновить сам xrock: демон скачивает `xrock-latest.tar.gz` из
+последнего релиза GitHub, подменяет бинарник и UI, затем перезапускает сервис (ответ
+отдаётся до перезапуска):
+
+```json
+{ "ok": true, "before": "0.1.0", "after": "0.2.0", "restarting": true }
+```
