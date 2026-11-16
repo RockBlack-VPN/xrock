@@ -55,7 +55,7 @@
     <div class="sidebar-foot">
       <div class="mini"><span class="muted">Демон</span><span class="mono" id="side-api">—</span></div>
       <div class="mini"><span class="muted">mihomo</span><span class="mono" id="side-mihomo">—</span></div>
-      <div class="mini muted">xrock UI · 0.1.0</div>
+      <div class="mini muted" id="side-version">xrock UI · —</div>
     </div>
   </aside>
 
@@ -134,6 +134,14 @@
             <div class="card-b" id="speed-body"></div>
           </article>
 
+          <article class="card router-card">
+            <header class="card-h">
+              <h2>Роутер</h2>
+              <span class="badge" id="router-badge">—</span>
+            </header>
+            <div class="card-b" id="router-body"></div>
+          </article>
+
           <article class="card">
             <header class="card-h">
               <h2>Подписка</h2>
@@ -157,18 +165,25 @@
         <div class="view-head">
           <h1>Серверы <span class="count" id="srv-count"></span></h1>
           <div class="actions">
-            <input type="search" class="input search" id="srv-search" placeholder="Поиск по имени…" autocomplete="off" spellcheck="false">
+            <input type="search" class="input search" id="srv-search" placeholder="Поиск по имени в группе…" autocomplete="off" spellcheck="false">
             <button type="button" class="btn primary" id="btn-srv-test-all">Проверить все</button>
           </div>
         </div>
 
         <div class="testbar" id="srv-testbar" hidden>
           <span class="spinner" aria-hidden="true"></span>
-          <span id="srv-testbar-text">Измеряю задержку через прокси…</span>
+          <span id="srv-testbar-text">тест… 0 с</span>
         </div>
 
-        <div class="groups" id="srv-groups"></div>
-        <div class="empty" id="srv-empty" hidden>Нет данных о группах. Демон ещё не прислал состояние.</div>
+        <div class="srv-tabs-wrap">
+          <div class="srv-tabs" id="srv-tabs" role="tablist" aria-label="Группы серверов"></div>
+        </div>
+
+        <div class="srv-panel">
+          <div class="srv-panel-head" id="srv-panel-head" hidden></div>
+          <div class="node-grid" id="srv-grid"></div>
+          <div class="empty" id="srv-empty" hidden>Нет данных о группах. Демон ещё не прислал состояние.</div>
+        </div>
 
         <article class="card dead-card" id="srv-dead-wrap" hidden>
           <header class="card-h">
@@ -351,6 +366,50 @@
                 <span class="hint" id="wd-status"></span>
               </div>
               <p class="hint">Цели проверяются через активный прокси. Сохранение отправляет <code>POST /api/watch</code>.</p>
+            </div>
+          </article>
+
+          <article class="card wide" id="upd-card">
+            <header class="card-h">
+              <h2>Обновления</h2>
+              <span class="badge" id="upd-badge">—</span>
+            </header>
+            <div class="card-b">
+              <div class="upd-grid">
+                <div class="upd-item">
+                  <span class="upd-name">Панель xrock</span>
+                  <div class="upd-vers">
+                    <span class="upd-cur" id="upd-xrock-cur">—</span>
+                    <span class="upd-arrow" aria-hidden="true">→</span>
+                    <span class="upd-latest" id="upd-xrock-latest">—</span>
+                  </div>
+                  <span class="badge" id="upd-xrock-badge">—</span>
+                </div>
+                <div class="upd-item">
+                  <span class="upd-name">Ядро mihomo</span>
+                  <div class="upd-vers">
+                    <span class="upd-cur" id="upd-mihomo-cur">—</span>
+                    <span class="upd-arrow" aria-hidden="true">→</span>
+                    <span class="upd-latest" id="upd-mihomo-latest">—</span>
+                  </div>
+                  <span class="badge" id="upd-mihomo-badge">—</span>
+                </div>
+              </div>
+
+              <div class="row">
+                <button type="button" class="btn" id="btn-upd-core">Обновить ядро mihomo</button>
+                <button type="button" class="btn" id="btn-upd-panel">Обновить панель</button>
+                <button type="button" class="btn ghost small" id="btn-upd-check">Проверить версии</button>
+                <span class="hint" id="upd-status"></span>
+              </div>
+
+              <div class="upd-progress" id="upd-progress" hidden>
+                <span class="spinner" aria-hidden="true"></span>
+                <span id="upd-progress-text">…</span>
+              </div>
+              <pre class="upd-log" id="upd-log" hidden></pre>
+
+              <p class="hint">Версии берутся из <code>GET /api/versions</code>. Обновление ядра перезапускает VPN на 10–20 секунд, обновление панели — сам демон xrock.</p>
             </div>
           </article>
         </div>
