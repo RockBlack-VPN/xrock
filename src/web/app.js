@@ -2360,19 +2360,26 @@
     }
 
     var nowSec = Math.floor(Date.now() / 1000);
+    var wdOff = wd.enabled === false;
     var lastCheck = wd.lastCheck;
-    var targets = (lastCheck && lastCheck.results) || [];
+    // Сторож выключен — цели не проверяются: не показываем старые цифры как живые.
+    var targets = wdOff ? [] : ((lastCheck && lastCheck.results) || []);
     var okCount = targets.filter(function (r) { return r && r.ok; }).length;
 
     var metrics = el('div', { class: 'cur-metrics' }, [
       metric('задержка через прокси', ms > 0 ? fmtDelay(ms) : '—', ms > 0 ? delayClass(ms) : 'dim',
         'Проксированный замер Clash API, не TCP-пинг роутера'),
       metric('состояние', healthText, healthCls === 'ok' ? 'good' : healthCls === 'bad' ? 'bad' : 'dim'),
-      metric('цели проверки', targets.length ? okCount + '/' + targets.length : '—', targets.length && okCount === targets.length ? 'good' : targets.length ? 'warn' : 'dim'),
-      metric('стабилен', stat && stat.okSince ? fmtDur(nowSec - num(stat.okSince)) : '—', 'dim')
+      metric('цели проверки', targets.length ? okCount + '/' + targets.length : '—',
+        targets.length && okCount === targets.length ? 'good' : targets.length ? 'warn' : 'dim',
+        wdOff ? 'Сторож выключен — цели не проверяются' : ''),
+      metric('стабилен', !wdOff && stat && stat.okSince ? fmtDur(nowSec - num(stat.okSince)) : '—', 'dim')
     ]);
     body.appendChild(metrics);
 
+    if (wdOff) {
+      body.appendChild(el('div', { class: 'hint', text: 'Сторож выключен: YouTube / Telegram / Instagram не проверяются, переключений нет.' }));
+    }
     if (targets.length) {
       if (lastCheck && lastCheck.name && lastCheck.name !== cur) {
         body.appendChild(el('div', { class: 'hint', text: 'Последняя проверка целей относится к узлу ' + nodeLabel(lastCheck.name) }));
