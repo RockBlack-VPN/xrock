@@ -1,0 +1,13 @@
+# сборка
+dist/
+pkg/
+*.tar.gz
+*.exe
+
+# локальные тесты
+test-state*.json
+xrock-test*.log
+*-backup.*
+
+# система
+.DS_Store
