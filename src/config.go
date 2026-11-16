@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const version = "0.3.2"
+const version = "0.3.3"
 
 var (
 	flagListen  = flag.String("listen", "0.0.0.0:9091", "адрес панели xrock")
@@ -48,7 +48,7 @@ func readMihomoConf(dir string) mihomoConf {
 			continue
 		}
 		c.Found = true
-		s := string(b)
+		s := strings.TrimPrefix(string(b), "\ufeff") // файл могли сохранить с BOM (Windows)
 		if m := reExternalController.FindStringSubmatch(s); m != nil {
 			c.API = m[1]
 		}
