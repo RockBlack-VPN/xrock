@@ -134,7 +134,15 @@ external-ui-url: https://github.com/RockBlack-VPN/xrock/releases/latest/download
   выбрал адрес — видно, сколько у него соединений и **через какой сервер/страну он выходит**.
   Сортировка — кликом по заголовку (хост, правило, цепочка, ↑, ↓, время); на телефоне
   заголовков нет, поэтому там выпадающий список «Сортировка».
-- **Правила** — список правил mihomo с поиском.
+- **Правила** — список правил из `config.yaml` с поиском, **переключателем «вкл/выкл»** и
+  **добавлением своего правила**. Правка пишется в файл с бэкапом, проверяется `mihomo -t`
+  и применяется сразу (mihomo перечитывает конфиг, активные соединения переподключаются).
+  Выключенное правило остаётся в файле строкой `#off - TYPE,payload,target` — видно в панели,
+  включается обратно одним щелчком. Если `config.yaml` недоступен, список показывается
+  из mihomo только для чтения.
+- **Соединения** — над адресом виден **сервис**: домен из SNI (mihomo его сниффит) и
+  узнаваемое имя — YouTube, Telegram, Steam, Discord, Epic Games, Google, Cloudflare и т. п.
+  Таблица сервисов локальная, без запросов в сеть, поэтому процессор и сеть не нагружаются.
 - **Подписка** — провайдеры: срок, трафик, сколько узлов, обновление и **смена ссылки подписки**:
   новый url пишется в `config.yaml` mihomo (с резервной копией), ядро перечитывает конфиг без перезапуска VPN.
 - **Журнал** — строки как в «Правилах»: номер, «Событие : текст», вторая строка с
@@ -177,7 +185,9 @@ external-ui-url: https://github.com/RockBlack-VPN/xrock/releases/latest/download
 
 ## API демона
 
-`/api/state`, `/api/test`, `/api/select`, `/api/watch`, `/api/connections`, `/api/rules`,
+`/api/state`, `/api/test`, `/api/select`, `/api/watch`, `/api/connections`,
+`/api/rules` (GET — список из config.yaml, POST `{id, enabled}` — включить/выключить,
+PUT `{type, payload, proxy}` — добавить своё),
 `/api/providers/update`, `/api/subscription`, `/api/sys`, `/api/versions`, `/api/upgrade/core`, `/api/upgrade/panel`,
 `/api/stream/traffic`, `/api/stream/logs`. Полное описание — [docs/api.md](docs/api.md).
 
