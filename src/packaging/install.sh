@@ -9,7 +9,12 @@
 # и mihomo сам скачивает/обновляет её. Если GitHub недоступен,
 # установщик упадёт на копию UI из архива (офлайн-запас).
 set -e
-cd "$(dirname "$0")"
+# Абсолютный путь к самому установщику: его копия остаётся в /opt/share/xrock,
+# чтобы документированное удаление работало в любой момент, а не только пока
+# распакован архив во /tmp.
+SELF_DIR=$(cd "$(dirname "$0")" && pwd)
+SELF="$SELF_DIR/$(basename "$0")"
+cd "$SELF_DIR"
 
 MIHOMO_DIR=/opt/etc/mihomo
 CONF="$MIHOMO_DIR/config.yaml"
@@ -17,6 +22,8 @@ UI_DIR="$MIHOMO_DIR/xrock"
 UI_URL="https://github.com/RockBlack-VPN/xrock/releases/latest/download/xrock-ui.zip"
 BIN_DIR=/opt/sbin
 INIT=/opt/etc/init.d/S99xrock
+SHARE_DIR=/opt/share/xrock
+STATE=/opt/etc/xrock.json
 PORT=9091
 
 if [ "$1" = "--uninstall" ]; then
@@ -24,6 +31,10 @@ if [ "$1" = "--uninstall" ]; then
   rm -f "$INIT" "$BIN_DIR/xrock"
   rm -rf "$UI_DIR"
   echo "xrock удалён. В $CONF остались external-ui/external-ui-url — при необходимости удалите их."
+  echo "Журнал и настройки сторожа сохранены: $STATE (удалить: rm -f $STATE)"
+  if [ -f "$SHARE_DIR/install.sh" ]; then
+    echo "Установщик оставлен для переустановки: $SHARE_DIR/install.sh (убрать всё: rm -rf $SHARE_DIR)"
+  fi
   exit 0
 fi
 
@@ -49,6 +60,15 @@ fi
 [ -x "$INIT" ] && "$INIT" stop >/dev/null 2>&1 || true
 cp "$SRC" "$BIN_DIR/xrock"
 chmod 755 "$BIN_DIR/xrock"
+
+# 1b. копия установщика в /opt/share/xrock — чтобы удаление работало и после
+#     того, как распакованный архив из /tmp пропал:
+#       sh /opt/share/xrock/install.sh --uninstall
+mkdir -p "$SHARE_DIR" 2>/dev/null || true
+if [ -d "$SHARE_DIR" ] && [ -f "$SELF" ] && [ "$SELF" != "$SHARE_DIR/install.sh" ]; then
+  cp "$SELF" "$SHARE_DIR/install.sh" 2>/dev/null || echo "Внимание: не смог сохранить установщик в $SHARE_DIR"
+fi
+chmod 755 "$SHARE_DIR/install.sh" 2>/dev/null || true
 
 # 2. конфиг mihomo: external-ui: xrock + адрес архива UI
 BACKUP="$CONF.xrock-backup.$(date +%Y%m%d-%H%M%S)"
@@ -144,3 +164,4 @@ echo "  Демон xrock:                   http://$LAN_IP:$PORT/api/state"
 echo "  Журнал:                        /opt/var/log/xrock.log"
 echo
 echo "Обновить панель потом: «Настройки → Обновления» или просто перезапуск mihomo."
+echo "Удалить панель:        sh $SHARE_DIR/install.sh --uninstall"
