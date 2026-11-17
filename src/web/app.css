@@ -1333,15 +1333,6 @@ main#views { padding: 18px; }
   grid-auto-columns: minmax(0, 1fr);
   gap: 12px 10px;
 }
-/* Та же беда в широкой карточке «Текущий сервер»: задержка и таймер меняют
-   длину — колонки фиксированные, ряд остаётся компактным слева. */
-#cur-body .cur-metrics {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
-  gap: 12px 22px;
-  max-width: 560px;
-}
 .cur-targets {
   display: flex;
   flex-direction: column;
