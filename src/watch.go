@@ -144,7 +144,7 @@ func (a *app) failover(proxies map[string]*proxyItem, gname, cur string, res []t
 		return
 	}
 	a.markDead(cur)
-	a.addEvent("warn", gname, fmt.Sprintf("%s не отвечает (%s) — ищу замену", cur, summar(res)))
+	a.addEvent("warn", gname, fmt.Sprintf("%s → Offline на %d мин (%s) — ищу замену", cur, deadCooldown/60, summar(res)))
 
 	cands := a.candidates(proxies, g)
 	if len(cands) == 0 {
