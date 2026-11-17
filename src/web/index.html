@@ -300,9 +300,38 @@
         <div class="view-head">
           <h1>Правила <span class="count" id="rules-count"></span></h1>
           <div class="actions">
+            <button type="button" class="btn small" id="btn-rule-add">+ Правило</button>
             <input type="search" class="input search" id="rules-search" placeholder="Поиск по типу, содержимому, цели…" autocomplete="off" spellcheck="false">
           </div>
         </div>
+
+        <form class="rule-form" id="rule-form" hidden>
+          <label class="rule-f">
+            <span>Тип</span>
+            <select class="input select" id="rule-type">
+              <option value="DOMAIN">DOMAIN</option>
+              <option value="DOMAIN-SUFFIX">DOMAIN-SUFFIX</option>
+              <option value="DOMAIN-KEYWORD">DOMAIN-KEYWORD</option>
+              <option value="IP-CIDR">IP-CIDR</option>
+              <option value="IP-CIDR6">IP-CIDR6</option>
+              <option value="RULE-SET">RULE-SET</option>
+              <option value="GEOSITE">GEOSITE</option>
+              <option value="GEOIP">GEOIP</option>
+              <option value="PROCESS-NAME">PROCESS-NAME</option>
+              <option value="DST-PORT">DST-PORT</option>
+            </select>
+          </label>
+          <label class="rule-f grow">
+            <span>Содержимое</span>
+            <input class="input" id="rule-payload" placeholder="например example.com" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="rule-f">
+            <span>Куда идёт</span>
+            <select class="input select" id="rule-proxy"></select>
+          </label>
+          <button type="submit" class="btn small primary" id="btn-rule-save">Добавить</button>
+          <button type="button" class="btn small ghost" id="btn-rule-cancel">Отмена</button>
+        </form>
 
         <div class="toolbar">
           <span class="muted small" id="rules-meta">—</span>
@@ -311,7 +340,7 @@
         <div class="table-wrap">
           <table class="table" id="rules-table">
             <thead>
-              <tr><th>Тип</th><th>Содержимое</th><th>Куда идёт</th></tr>
+              <tr><th class="col-sw">Вкл</th><th>Тип</th><th>Содержимое</th><th>Куда идёт</th></tr>
             </thead>
             <tbody id="rules-body"></tbody>
           </table>

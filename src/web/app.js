@@ -28,7 +28,7 @@
     link: { ok: false, err: '', fails: 0, version: '', daemonOk: false, daemonVersion: '', probing: false, probedAt: 0 },
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
     conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '', sort: { key: 'time', dir: 'desc' } },
-    rules: { list: [], search: '', at: 0, loading: false, err: '' },
+    rules: { list: [], search: '', at: 0, loading: false, err: '', src: '', editable: false, busy: false },
     journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null, q: '', regex: false },
     servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
     settings: { dirty: false, targetsDirty: false, inited: false },
@@ -955,6 +955,14 @@
   function postJson(path, body, timeoutMs) {
     return apiJson(path, {
       method: 'POST',
+      headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    }, timeoutMs);
+  }
+
+  function putJson(path, body, timeoutMs) {
+    return apiJson(path, {
+      method: 'PUT',
       headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify(body || {})
     }, timeoutMs);
@@ -3349,10 +3357,76 @@
     return isNaN(ms) ? 0 : Math.floor(ms / 1000);
   }
 
+  // Сервис по домену — офлайн-таблица, без запросов в сеть (процессор не грузим).
+  // Порядок важен: частные домены (YouTube, Telegram) идут раньше общих (Google).
+  var SERVICE_MAP = [
+    { k: 'youtube', n: 'YouTube', i: 'youtube', d: ['youtube.com', 'youtu.be', 'googlevideo.com', 'ytimg.com', 'youtube-nocookie.com', 'yt3.ggpht.com'] },
+    { k: 'telegram', n: 'Telegram', i: 'telegram', d: ['telegram.org', 'telegram.me', 't.me', 'tdesktop.com', 'telegra.ph', 'telegram-cdn.org'] },
+    { k: 'instagram', n: 'Instagram', i: 'instagram', d: ['instagram.com', 'cdninstagram.com'] },
+    { k: 'discord', n: 'Discord', i: 'discord', d: ['discord.com', 'discordapp.com', 'discordapp.net', 'discord.gg', 'discord.media'] },
+    { k: 'steam', n: 'Steam', i: 'steam', d: ['steampowered.com', 'steamstatic.com', 'steamcommunity.com', 'steamcontent.com', 'steamserver.net', 'valvesoftware.com', 'steam-chat.com'] },
+    { k: 'twitch', n: 'Twitch', i: 'twitch', d: ['twitch.tv', 'ttvnw.net', 'jtvnw.net', 'ext-twitch.tv'] },
+    { k: 'netflix', n: 'Netflix', i: 'netflix', d: ['netflix.com', 'nflxvideo.net', 'nflximg.net', 'nflxext.com', 'nflxso.net'] },
+    { k: 'spotify', n: 'Spotify', i: 'spotify', d: ['spotify.com', 'scdn.co', 'spotifycdn.com', 'spotify.link'] },
+    { k: 'whatsapp', n: 'WhatsApp', i: 'whatsapp', d: ['whatsapp.com', 'whatsapp.net', 'wa.me'] },
+    { k: 'twitter', n: 'X (Twitter)', i: 'x', d: ['twitter.com', 'x.com', 'twimg.com', 't.co', 'twitter.co'] },
+    { k: 'github', n: 'GitHub', i: 'github', d: ['github.com', 'githubusercontent.com', 'githubassets.com', 'github.io', 'github.dev'] },
+    { k: '', n: 'Epic Games', i: '', d: ['epicgames.com', 'epicgames.dev', 'unrealengine.com', 'fortnite.com'] },
+    { k: '', n: 'Riot Games', i: '', d: ['riotgames.com', 'riotcdn.net', 'leagueoflegends.com', 'valorant.com'] },
+    { k: '', n: 'Battle.net', i: '', d: ['blizzard.com', 'battle.net', 'blzstatic.cn', 'blizzard.net'] },
+    { k: '', n: 'Xbox', i: '', d: ['xboxlive.com', 'xbox.com', 'xboxservices.com'] },
+    { k: '', n: 'PlayStation', i: '', d: ['playstation.com', 'playstation.net', 'sonyentertainmentnetwork.com'] },
+    { k: '', n: 'Google', i: '', d: ['google.com', 'gstatic.com', 'googleapis.com', 'gvt1.com', 'gvt2.com', '1e100.net', 'googleusercontent.com', 'ggpht.com', 'googlesyndication.com', 'googleadservices.com', 'doubleclick.net', 'gmail.com'] },
+    { k: '', n: 'Cloudflare', i: '', d: ['cloudflare.com', 'cloudflare-dns.com', 'cf-ipfs.com', 'workers.dev'] },
+    { k: '', n: 'Apple', i: '', d: ['apple.com', 'icloud.com', 'mzstatic.com', 'aaplimg.com', 'apple-cloudkit.com'] },
+    { k: '', n: 'Microsoft', i: '', d: ['microsoft.com', 'windowsupdate.com', 'live.com', 'office.com', 'office365.com', 'msftconnecttest.com', 'bing.com', 'msn.com', 'skype.com'] },
+    { k: '', n: 'Meta', i: '', d: ['facebook.com', 'fbcdn.net', 'fbsbx.com', 'messenger.com', 'fb.com'] },
+    { k: '', n: 'OpenAI', i: '', d: ['openai.com', 'chatgpt.com', 'oaistatic.com', 'oaiusercontent.com', 'sora.com'] },
+    { k: '', n: 'Anthropic', i: '', d: ['anthropic.com', 'claude.ai', 'claudeusercontent.com'] },
+    { k: '', n: 'TikTok', i: '', d: ['tiktok.com', 'tiktokcdn.com', 'tiktokv.com', 'musical.ly'] },
+    { k: '', n: 'Zoom', i: '', d: ['zoom.us', 'zoom.com'] },
+    { k: '', n: 'Adobe', i: '', d: ['adobe.com', 'adobelogin.com', 'adobe.io'] },
+    { k: '', n: 'Amazon', i: '', d: ['amazon.com', 'amazonaws.com', 'cloudfront.net', 'media-amazon.com'] }
+  ];
+
+  function serviceForDomain(domain) {
+    var d = String(domain || '').toLowerCase().replace(/\.$/, '');
+    if (!d || isIpAddr(d)) return null;
+    for (var i = 0; i < SERVICE_MAP.length; i++) {
+      var s = SERVICE_MAP[i];
+      for (var j = 0; j < s.d.length; j++) {
+        var suf = s.d[j];
+        if (d === suf || (d.length > suf.length && d.slice(-(suf.length + 1)) === '.' + suf)) return s;
+      }
+    }
+    return null;
+  }
+
+  // Что за сервис у соединения: сначала домен из SNI (mihomo его сниффит),
+  // потом название набора правил, иначе — сам домен. Без сети и без нагрузки.
+  function connService(c) {
+    if (!c) return null;
+    var dom = c.sni || (!isIpAddr(c.host) && c.host && c.host !== '—' ? c.host : '');
+    var svc = serviceForDomain(dom);
+    if (svc) return { name: svc.n, icon: svc.i, domain: dom && dom.toLowerCase() !== svc.n.toLowerCase() ? dom : '' };
+    if (!dom) {
+      var hay = String(c.payload || '') + ' ' + String(c.rule || '');
+      var m = /(telegram|youtube|twitter|discord|steam|twitch|netflix|spotify|instagram|whatsapp)/i.exec(hay);
+      if (m) {
+        var key = m[1].toLowerCase();
+        for (var i = 0; i < SERVICE_MAP.length; i++) {
+          if (SERVICE_MAP[i].k === key) return { name: SERVICE_MAP[i].n, icon: SERVICE_MAP[i].i, domain: '' };
+        }
+      }
+      return null;
+    }
+    return { name: dom, icon: '', domain: '' };
+  }
+
   function normConn(c) {
     c = c || {};
     var m = c.metadata || c.meta || {};
-    var host = m.host || m.sni || m.destinationIP || m.destIP || m.remoteDestination || '';
+    var host = m.host || m.sniffHost || m.sni || m.destinationIP || m.destIP || m.remoteDestination || '';
     if (!host) host = '—';
     var dst = m.destinationIP || m.destIP || '';
     var dstPort = m.destinationPort || m.destPort || '';
@@ -3363,6 +3437,7 @@
     return {
       id: c.id !== undefined && c.id !== null ? String(c.id) : (host + '|' + (m.destinationPort || '') + '|' + (c.start || '')),
       host: String(host),
+      sni: m.sniffHost ? String(m.sniffHost) : '',
       rule: c.rule ? String(c.rule) : '',
       payload: c.rulePayload !== undefined && c.rulePayload !== null ? String(c.rulePayload) : '',
       chain: chains.length ? chains.map(nodeLabel).join(' → ') : (c.chain ? String(c.chain) : ''),
@@ -3667,6 +3742,14 @@
         }
       }, '✕');
 
+      var svc = connService(c);
+      var svcEl = svc ? el('span', {
+        class: 'cell-svc',
+        title: (svc.name + (svc.domain ? ' · ' + svc.domain : ''))
+      }, [
+        svc.icon ? icoEl(svc.icon, 'sm') : null,
+        el('span', { text: svc.name })
+      ]) : null;
       var tr = el('tr', {
         class: 'conn-row' + (selected ? ' selected' : ''),
         tabindex: '0',
@@ -3675,6 +3758,7 @@
       }, [
         el('td', { 'data-label': 'Хост' }, [
           el('div', { class: 'cell-stack' }, [
+            svcEl,
             el('span', { class: 'cell-main', text: c.host, title: c.host }),
             el('span', {
               class: 'cell-sub',
@@ -4267,17 +4351,13 @@
     try {
       var res = await apiJson('/api/rules', null, 12000);
       var raw = res && Array.isArray(res.rules) ? res.rules : (Array.isArray(res) ? res : []);
-      ui.rules.list = raw.map(function (r) {
-        r = r || {};
-        return {
-          type: r.type ? String(r.type) : '—',
-          payload: r.payload !== undefined && r.payload !== null ? String(r.payload) : '',
-          proxy: r.proxy ? String(r.proxy) : (r.target ? String(r.target) : '')
-        };
-      });
+      applyRulesResponse(res, raw);
       ui.rules.at = Date.now();
       ui.rules.err = '';
-      if (ui.view === 'rules') renderRules();
+      if (ui.view === 'rules') {
+        fillRuleTargets();
+        renderRules();
+      }
     } catch (e) {
       ui.rules.err = friendlyError(e);
       if (manual) toast('Не удалось получить правила: ' + ui.rules.err, 'bad');
@@ -4287,10 +4367,94 @@
     }
   }
 
+  // Ответ сервера: правила из config.yaml (с id/disabled) или из mihomo (только чтение).
+  function applyRulesResponse(res, raw) {
+    var src = res && res.src ? String(res.src) : '';
+    ui.rules.src = src;
+    ui.rules.editable = src === 'file';
+    ui.rules.list = raw.map(function (r, i) {
+      r = r || {};
+      return {
+        id: r.id !== undefined && r.id !== null ? num(r.id) : i,
+        type: r.type ? String(r.type) : '—',
+        payload: r.payload !== undefined && r.payload !== null ? String(r.payload) : '',
+        proxy: r.proxy ? String(r.proxy) : (r.target ? String(r.target) : ''),
+        disabled: !!r.disabled
+      };
+    });
+  }
+
+  // Переключатель правила: панель правит config.yaml, mihomo перечитывает его.
+  async function toggleRule(rule, enabled, box) {
+    if (ui.rules.busy) return;
+    ui.rules.busy = true;
+    if (box) box.disabled = true;
+    try {
+      var res = await postJson('/api/rules', { id: rule.id, enabled: !!enabled }, 40000);
+      applyRulesResponse(res, res && Array.isArray(res.rules) ? res.rules : []);
+      ui.rules.at = Date.now();
+      ui.rules.err = '';
+      renderRules();
+      toast((enabled ? 'Правило включено: ' : 'Правило отключено: ') + (rule.type + ' ' + rule.payload).trim(), 'ok', 3500);
+      setTimeout(function () { pollState(); }, 1200);
+    } catch (e) {
+      toast('Не удалось изменить правило: ' + friendlyError(e), 'bad', 6000);
+      renderRules();
+    } finally {
+      ui.rules.busy = false;
+    }
+  }
+
+  async function addRule(type, payload, proxy) {
+    if (ui.rules.busy) return false;
+    ui.rules.busy = true;
+    var btn = $('btn-rule-save');
+    setBusy(btn, true, 'Сохраняю…');
+    try {
+      var res = await putJson('/api/rules', { type: type, payload: payload, proxy: proxy }, 40000);
+      applyRulesResponse(res, res && Array.isArray(res.rules) ? res.rules : []);
+      ui.rules.at = Date.now();
+      ui.rules.err = '';
+      renderRules();
+      toast('Правило добавлено: ' + type + ' ' + payload + ' → ' + proxy, 'ok', 4000);
+      setTimeout(function () { pollState(); }, 1200);
+      return true;
+    } catch (e) {
+      toast('Не удалось добавить правило: ' + friendlyError(e), 'bad', 6000);
+      return false;
+    } finally {
+      ui.rules.busy = false;
+      setBusy(btn, false);
+    }
+  }
+
+  // Куда может вести правило: группы из состояния + DIRECT/REJECT.
+  function ruleTargets() {
+    var out = [];
+    var groups = ui.state && Array.isArray(ui.state.groups) ? ui.state.groups : [];
+    groups.forEach(function (g) { if (g && g.name) out.push(String(g.name)); });
+    ['DIRECT', 'REJECT'].forEach(function (x) { if (out.indexOf(x) < 0) out.push(x); });
+    return out;
+  }
+
+  function fillRuleTargets() {
+    var sel = $('rule-proxy');
+    if (!sel) return;
+    var cur = sel.value;
+    var targets = ruleTargets();
+    clear(sel);
+    targets.forEach(function (name) {
+      sel.appendChild(el('option', { value: name, text: name }));
+    });
+    if (cur && targets.indexOf(cur) >= 0) sel.value = cur;
+    else if (targets.indexOf('PROXY') >= 0) sel.value = 'PROXY';
+  }
+
   function renderRules() {
     var body = $('rules-body');
     if (!body) return;
-    var sig = (ui.rules.at || 0) + '|' + ui.rules.list.length + '|' + (ui.rules.err || '') + '|' + (ui.rules.search || '');
+    var sig = (ui.rules.at || 0) + '|' + ui.rules.list.length + '|' + (ui.rules.err || '') + '|' + (ui.rules.search || '') +
+      '|' + ui.rules.list.map(function (r) { return r.disabled ? '0' : '1'; }).join('');
     if (sig === rulesSig && body.childNodes.length) return;
     rulesSig = sig;
 
@@ -4306,7 +4470,19 @@
     clear(body);
     var frag = document.createDocumentFragment();
     list.forEach(function (r) {
-      frag.appendChild(el('tr', null, [
+      var box = el('input', { type: 'checkbox', class: 'sw-input' });
+      box.checked = !r.disabled;
+      if (ui.rules.editable) {
+        box.disabled = !!ui.rules.busy;
+        box.addEventListener('change', function () { toggleRule(r, box.checked, box); });
+        box.title = r.disabled ? 'Включить правило' : 'Отключить правило';
+      } else {
+        box.disabled = true;
+        box.title = 'Правила только для чтения (config.yaml не найден)';
+      }
+      var sw = el('label', { class: 'sw' + (r.disabled ? ' off' : ''), title: box.title }, [box, el('span', { class: 'sw-track', 'aria-hidden': 'true' })]);
+      frag.appendChild(el('tr', { class: r.disabled ? 'rule-off' : '' }, [
+        el('td', { 'data-label': 'Вкл', class: 'col-sw' }, [sw]),
         el('td', { 'data-label': 'Тип' }, [el('span', { class: 'cell-main', text: r.type })]),
         el('td', { 'data-label': 'Содержимое' }, [
           el('span', { class: 'cell-main', text: r.payload || '—', title: r.payload })
@@ -4330,15 +4506,23 @@
     if (countEl) countEl.textContent = ui.rules.list.length ? (q ? list.length + ' из ' + ui.rules.list.length : String(ui.rules.list.length)) : '';
     var meta = $('rules-meta');
     if (meta) {
-      meta.textContent = ui.rules.err
-        ? 'ошибка: ' + ui.rules.err
-        : (ui.rules.at
-          ? (LANG === 'en'
-            ? 'rules: ' + ui.rules.list.length + ' · updated ' + fmtClock(ui.rules.at / 1000)
-            : 'правил: ' + ui.rules.list.length + ' · обновлено ' + fmtClock(ui.rules.at / 1000))
-          : (LANG === 'en' ? 'loading…' : 'загрузка…'));
+      var parts = [];
+      if (ui.rules.err) parts.push('ошибка: ' + ui.rules.err);
+      else if (ui.rules.at) {
+        parts.push((LANG === 'en' ? 'rules: ' : 'правил: ') + ui.rules.list.length);
+        var off = ui.rules.list.filter(function (r) { return r.disabled; }).length;
+        if (off) parts.push(LANG === 'en' ? off + ' off' : off + ' выключено');
+        parts.push(ui.rules.editable
+          ? (LANG === 'en' ? 'edit applies immediately (config.yaml)' : 'правки сразу пишутся в config.yaml')
+          : (LANG === 'en' ? 'read-only' : 'только чтение'));
+      } else {
+        parts.push(LANG === 'en' ? 'loading…' : 'загрузка…');
+      }
+      meta.textContent = parts.join(' · ');
       meta.style.color = ui.rules.err ? 'var(--bad)' : '';
     }
+    var addBtn = $('btn-rule-add');
+    if (addBtn) addBtn.disabled = !ui.rules.editable || !!ui.rules.busy;
     if (wrap) wrap.scrollTop = keepScroll;
   }
 
@@ -5593,6 +5777,40 @@
     if (rulesSearch) rulesSearch.addEventListener('input', function () {
       ui.rules.search = rulesSearch.value;
       renderRules();
+    });
+
+    var ruleAddBtn = $('btn-rule-add');
+    if (ruleAddBtn) ruleAddBtn.addEventListener('click', function () {
+      var form = $('rule-form');
+      if (!form) return;
+      form.hidden = !form.hidden;
+      if (!form.hidden) {
+        fillRuleTargets();
+        var p = $('rule-payload');
+        if (p) { try { p.focus(); } catch (e) {} }
+      }
+    });
+    var ruleCancelBtn = $('btn-rule-cancel');
+    if (ruleCancelBtn) ruleCancelBtn.addEventListener('click', function () {
+      var form = $('rule-form');
+      if (form) form.hidden = true;
+    });
+    var ruleForm = $('rule-form');
+    if (ruleForm) ruleForm.addEventListener('submit', async function (e) {
+      e.preventDefault();
+      var typeSel = $('rule-type');
+      var payloadInp = $('rule-payload');
+      var proxySel = $('rule-proxy');
+      var type = typeSel ? typeSel.value : 'DOMAIN';
+      var payload = payloadInp ? String(payloadInp.value).trim() : '';
+      var proxy = proxySel ? proxySel.value : 'PROXY';
+      if (!payload) { toast('Укажи содержимое правила: домен, IP или имя набора', 'warn'); return; }
+      var ok = await addRule(type, payload, proxy);
+      if (ok) {
+        ruleForm.hidden = true;
+        if (payloadInp) payloadInp.value = '';
+        loadRules(false);
+      }
     });
 
     var jrnTabs = $('jrn-tabs');
