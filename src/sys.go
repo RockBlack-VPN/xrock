@@ -283,6 +283,7 @@ func (a *app) sysLoop() {
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
 	var lastWarn int64
+	var stuck int
 	for range t.C {
 		idle, total := cpuTimes()
 		cpuMu.Lock()
@@ -294,6 +295,22 @@ func (a *app) sysLoop() {
 		if n := runtime.NumGoroutine(); n > 200 && time.Now().Unix()-lastWarn > 300 {
 			lastWarn = time.Now().Unix()
 			log.Printf("много горутин: %d (проверьте висящие потоки /api/stream/*)", n)
+		}
+
+		// Страховка от незамеченного дедлока: если общий мьютекс занят больше
+		// минуты, значит кто-то держит его и ждёт сам себя (рекурсивный захват)
+		// или завис на блокирующем вызове. Пишем в журнал стек всех горутин —
+		// по нему сразу видно виновника, даже если панель уже не отвечает.
+		if a.mu.TryLock() {
+			a.mu.Unlock()
+			stuck = 0
+		} else {
+			stuck++
+			if stuck == 12 || (stuck > 12 && stuck%60 == 0) {
+				buf := make([]byte, 1<<20)
+				n := runtime.Stack(buf, true)
+				log.Printf("ВНИМАНИЕ: a.mu занят >60с — вероятен дедлок, стек горутин:\n%s", buf[:n])
+			}
 		}
 	}
 }

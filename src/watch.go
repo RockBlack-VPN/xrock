@@ -104,13 +104,17 @@ func (a *app) round(s watchSettings) {
 	a.lastRound = time.Now().Unix()
 	lc := checkResult{Name: leaf, T: a.lastRound, Results: res}
 	a.lastCheck = &lc
+	// Событие пишем ПОСЛЕ разблокировки: addEvent сам берёт a.mu, а мьютекс
+	// не рекурсивный. Раньше вызов внутри лока навсегда вешал панель ровно в
+	// тот момент, когда сервер восстанавливался после сбоя.
+	recovered := ok && !a.curOK && a.consecFail > 0
 	if ok {
-		if !a.curOK && a.consecFail > 0 {
-			a.addEvent("ok", gname, fmt.Sprintf("%s снова отвечает (%d мс)", leaf, avgMS(res)))
-		}
 		a.curOK = true
 		a.consecFail = 0
 		a.mu.Unlock()
+		if recovered {
+			a.addEvent("ok", gname, fmt.Sprintf("%s снова отвечает (%d мс)", leaf, avgMS(res)))
+		}
 		a.clearDead(leaf)
 		return
 	}
