@@ -202,6 +202,9 @@ type connMeta struct {
 	DestinationPort string `json:"destinationPort"`
 	Host            string `json:"host"`
 	InboundName     string `json:"inboundName"`
+	SniffHost       string `json:"sniffHost"`
+	Process         string `json:"process"`
+	ProcessPath     string `json:"processPath"`
 }
 
 type connItem struct {
@@ -429,6 +432,16 @@ func (c *clash) rules() ([]ruleItem, error) {
 		return nil, err
 	}
 	return r.Rules, nil
+}
+
+// putConfig просит mihomo перечитать конфиг из файла (после правки правил).
+func (c *clash) putConfig(path string) error {
+	body, err := json.Marshal(map[string]any{"path": path, "force": true})
+	if err != nil {
+		return err
+	}
+	_, err = c.do("PUT", "/configs?force=true", body)
+	return err
 }
 
 // streamGet — GET на стрим mihomo; тело читает вызывающий, отмена по ctx.

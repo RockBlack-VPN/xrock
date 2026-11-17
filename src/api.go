@@ -442,15 +442,6 @@ func (a *app) handleConnections(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) handleRules(w http.ResponseWriter, r *http.Request) {
-	rules, err := a.cl.rules()
-	if err != nil {
-		fail(w, 502, err.Error())
-		return
-	}
-	writeJSON(w, map[string]any{"rules": rules})
-}
-
 func (a *app) handlePing(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "version": version})
 }
