@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -297,6 +298,51 @@ func (a *app) addRule(rtype, payload, target string) ([]cfgRule, error) {
 	return rules2, nil
 }
 
+// deleteRule — убрать правило из config.yaml по его id.
+func (a *app) deleteRule(id int) ([]cfgRule, error) {
+	path := cfgPath()
+	lines, err := readLines(path)
+	if err != nil {
+		return nil, err
+	}
+	start, end, rules, ok := parseRulesDoc(lines)
+	if !ok {
+		return nil, errors.New("в config.yaml не найден блок rules:")
+	}
+	if id < 0 || id >= len(rules) {
+		return nil, errors.New("правило не найдено — обновите список")
+	}
+	if t := strings.ToUpper(rules[id].Type); t == "MATCH" || t == "FINAL" {
+		return nil, errors.New("MATCH удалить нельзя — без него конфиг не пройдёт проверку")
+	}
+	idx := -1
+	n := 0
+	for i := start + 1; i < end; i++ {
+		if _, _, is := ruleBody(lines[i]); !is {
+			continue
+		}
+		if n == id {
+			idx = i
+			break
+		}
+		n++
+	}
+	if idx < 0 {
+		return nil, errors.New("правило не найдено в файле")
+	}
+	out := make([]string, 0, len(lines)-1)
+	out = append(out, lines[:idx]...)
+	out = append(out, lines[idx+1:]...)
+	if err := a.writeConfigValidated(path, out); err != nil {
+		return nil, err
+	}
+	_, _, rules2, _ := parseRulesDoc(out)
+	if rules2 == nil {
+		rules2 = rules
+	}
+	return rules2, nil
+}
+
 func (a *app) configRules() ([]cfgRule, bool) {
 	lines, err := readLines(cfgPath())
 	if err != nil {
@@ -310,7 +356,7 @@ func (a *app) configRules() ([]cfgRule, bool) {
 }
 
 // handleRules — GET: список (из config.yaml, иначе из mihomo), POST: вкл/выкл,
-// PUT: добавить своё правило.
+// PUT: добавить своё правило, DELETE ?id=N: удалить.
 func (a *app) handleRules(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case "POST":
@@ -349,6 +395,19 @@ func (a *app) handleRules(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.addEvent("info", "", "добавлено правило "+strings.ToUpper(req.Type)+","+req.Payload+","+req.Proxy)
+		writeJSON(w, map[string]any{"ok": true, "rules": rules, "src": "file"})
+	case "DELETE":
+		id, err := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("id")))
+		if err != nil {
+			fail(w, 400, "нужен ?id=<номер правила>")
+			return
+		}
+		rules, err := a.deleteRule(id)
+		if err != nil {
+			fail(w, 500, err.Error())
+			return
+		}
+		a.addEvent("info", "", "правило удалено")
 		writeJSON(w, map[string]any{"ok": true, "rules": rules, "src": "file"})
 	default:
 		if rules, ok := a.configRules(); ok {
