@@ -1325,6 +1325,23 @@ main#views { padding: 18px; }
 .hint.bad { color: var(--bad); }
 
 .cur-metrics { display: flex; flex-wrap: wrap; gap: 12px 26px; }
+/* В узких карточках «Обзора» метрики — три равные колонки, чтобы смена
+   «136 / 41,6 КБ / 288 КБ» на «148 / 5,47 МБ / 14,1 КБ» не двигала соседей. */
+#conn-card-body .cur-metrics {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 12px 10px;
+}
+/* Та же беда в широкой карточке «Текущий сервер»: задержка и таймер меняют
+   длину — колонки фиксированные, ряд остаётся компактным слева. */
+#cur-body .cur-metrics {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  gap: 12px 22px;
+  max-width: 560px;
+}
 .cur-targets {
   display: flex;
   flex-direction: column;
@@ -1375,7 +1392,10 @@ main#views { padding: 18px; }
 .dot-idle { background: var(--dim); }
 
 /* обзор: скорость */
-.speed-row { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+/* Ровные колонки: значения меняют длину («41,6 КБ» ↔ «5,47 МБ»), но блоки
+   не должны ездить по карточке — поэтому ширина колонок фиксирована, а не по
+   содержимому. Цифры и так табличные, так что «прыгает» только текст внутри. */
+.speed-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px 16px; }
 .spark { width: 100%; height: 42px; display: block; overflow: visible; }
 .spark .line {
   fill: none;
