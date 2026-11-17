@@ -1958,6 +1958,10 @@ main#views { padding: 18px; }
 .rule-form .btn { margin-bottom: 1px; }
 
 .col-sw { width: 46px; }
+.col-del { width: 44px; text-align: right; }
+.rule-del { padding: 2px 8px; font-size: 11px; opacity: .55; }
+.rule-del:hover:not(:disabled) { opacity: 1; color: var(--bad-txt); }
+.rule-del:disabled { opacity: .18; cursor: default; }
 
 .sw { display: inline-flex; align-items: center; cursor: pointer; }
 .sw-input {

@@ -4449,6 +4449,35 @@
     else if (targets.indexOf('PROXY') >= 0) sel.value = 'PROXY';
   }
 
+  // Удалить правило: строка уходит из config.yaml (с бэкапом и проверкой).
+  async function removeRule(rule) {
+    if (ui.rules.busy) return;
+    var isMatch = /^(MATCH|FINAL)$/i.test(String(rule.type || ''));
+    if (isMatch) { toast('MATCH удалить нельзя — он завершает список', 'warn'); return; }
+    var ok = await confirmDialog({
+      title: 'Удалить правило?',
+      text: (rule.type + ' ' + (rule.payload || '') + ' → ' + (rule.proxy || '')).trim() + '\n\nСтрока будет удалена из config.yaml (бэкап сохранится).',
+      okLabel: 'Удалить',
+      cancelLabel: 'Отмена',
+      danger: true
+    });
+    if (!ok) return;
+    ui.rules.busy = true;
+    try {
+      var res = await apiJson('/api/rules?id=' + encodeURIComponent(rule.id), { method: 'DELETE' }, 40000);
+      applyRulesResponse(res, res && Array.isArray(res.rules) ? res.rules : []);
+      ui.rules.at = Date.now();
+      ui.rules.err = '';
+      toast('Правило удалено: ' + (rule.type + ' ' + (rule.payload || '')).trim(), 'ok', 3500);
+      setTimeout(function () { pollState(); }, 1200);
+    } catch (e) {
+      toast('Не удалось удалить правило: ' + friendlyError(e), 'bad', 6000);
+    } finally {
+      ui.rules.busy = false;
+      renderRules();
+    }
+  }
+
   function renderRules() {
     var body = $('rules-body');
     if (!body) return;
@@ -4481,13 +4510,29 @@
         box.title = 'Правила только для чтения (config.yaml не найден)';
       }
       var sw = el('label', { class: 'sw' + (r.disabled ? ' off' : ''), title: box.title }, [box, el('span', { class: 'sw-track', 'aria-hidden': 'true' })]);
+      var isMatch = /^(MATCH|FINAL)$/i.test(String(r.type || ''));
+      var delBtn = el('button', {
+        type: 'button',
+        class: 'btn small ghost rule-del',
+        title: isMatch ? 'MATCH удалить нельзя' : 'Удалить правило',
+        'aria-label': 'Удалить правило ' + r.type + ' ' + (r.payload || '')
+      }, '✕');
+      if (isMatch || !ui.rules.editable) {
+        delBtn.disabled = true;
+      } else {
+        delBtn.addEventListener('click', function (e) {
+          if (e) { e.preventDefault(); e.stopPropagation(); }
+          removeRule(r);
+        });
+      }
       frag.appendChild(el('tr', { class: r.disabled ? 'rule-off' : '' }, [
         el('td', { 'data-label': 'Вкл', class: 'col-sw' }, [sw]),
         el('td', { 'data-label': 'Тип' }, [el('span', { class: 'cell-main', text: r.type })]),
         el('td', { 'data-label': 'Содержимое' }, [
           el('span', { class: 'cell-main', text: r.payload || '—', title: r.payload })
         ]),
-        el('td', { 'data-label': 'Куда идёт' }, [el('span', { class: 'cell-chain', text: r.proxy || '—' })])
+        el('td', { 'data-label': 'Куда идёт' }, [el('span', { class: 'cell-chain', text: r.proxy || '—' })]),
+        el('td', { 'data-label': '', class: 'col-del' }, [delBtn])
       ]));
     });
     body.appendChild(frag);
