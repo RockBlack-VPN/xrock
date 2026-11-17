@@ -29,7 +29,7 @@
     traffic: { up: 0, down: 0, at: 0, histD: [], histU: [] },
     conns: { list: [], search: '', at: 0, lastTry: 0, up: 0, down: 0, total: 0, loading: false, closing: false, hover: false, err: '', device: '', sort: { key: 'time', dir: 'desc' } },
     rules: { list: [], search: '', at: 0, loading: false, err: '' },
-    journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null },
+    journal: { tab: 'events', filter: 'all', logLevel: 'info', logs: [], autoscroll: true, es: null, q: '', regex: false },
     servers: { autoTested: false, search: '', testing: false, group: '', sort: 'delay' },
     settings: { dirty: false, targetsDirty: false, inited: false },
     sys: { data: null, at: 0, triedAt: 0, loading: false, err: '' },
@@ -1283,7 +1283,7 @@
     'Поиск по хосту или правилу…': 'Search host or rule…',
     'Поиск по правилу…': 'Search rule…',
     'Провайдеры подписок не найдены.': 'No subscription providers found.',
-    'Мёртвые узлы': 'Dead nodes',
+    'Мёртвые узлы': 'Offline',
     'по данным сторожа': 'per watchdog',
     'по последнему проксированному замеру': 'by last proxied probe',
     'События': 'Events',
@@ -1292,6 +1292,9 @@
     'Сбои': 'Failures',
     'Переключения': 'Switches',
     'Событий пока нет.': 'No events yet.',
+    'Логи пока не получены.': 'No log lines yet.',
+    'уровень': 'level',
+    'Неверное регулярное выражение.': 'Invalid regular expression.',
     'автоскролл': 'autoscroll',
     'поток не подключён': 'stream not connected',
     'Оформление': 'Appearance',
@@ -1363,7 +1366,7 @@
     'узел': 'node',
     'Последняя проверка': 'Last check',
     'Поток': 'Loop',
-    'Мёртвых узлов': 'Dead nodes',
+    'Мёртвых узлов': 'Offline',
     'идёт проверка': 'checking now',
     'ожидание': 'waiting',
     'остановлен': 'stopped',
@@ -1758,10 +1761,6 @@
     ui.journal.logs.push(item);
     if (ui.journal.logs.length > 500) ui.journal.logs.shift();
     appendLogLine(item);
-    if (ui.journal.logs.length > 500) {
-      var list = $('log-list');
-      if (list && list.firstChild) list.removeChild(list.firstChild);
-    }
     hideLogHint();
     setLogStatus('поток активен · уровень ' + (ui.journal.logLevel || 'info') + ' · ' + ui.journal.logs.length + ' строк');
   }
@@ -1774,17 +1773,13 @@
     return 'info';
   }
 
-  function appendLogLine(entry) {
-    var list = $('log-list');
-    if (!list) return;
-    // убираем заглушку «логи пока не получены»
-    var placeholder = list.querySelector('.log-status');
-    if (placeholder) list.removeChild(placeholder);
+  // Строка журнала: время, уровень-чип, сообщение — в одну линию, но с тем же
+  // видом, что и события (клик открывает детали).
+  function logLineEl(entry) {
     var lvl = logLevelClass(entry.type);
-    var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
     var d = new Date(entry.t);
     var line = el('div', {
-      class: 'log-line ' + lvl,
+      class: 'log-line jrn-row ' + lvl,
       title: 'Нажмите, чтобы разобрать строку',
       dataset: { lvl: lvl }
     }, [
@@ -1793,9 +1788,22 @@
       el('span', { class: 'log-msg', text: entry.text })
     ]);
     line.__log = entry;
-    list.appendChild(line);
+    return line;
+  }
+
+  function appendLogLine(entry) {
+    var list = $('log-list');
+    if (!list) return;
+    // убираем заглушку «логи пока не получены» / «ничего не найдено»
+    var placeholder = list.querySelector('.jrn-empty');
+    if (placeholder) list.removeChild(placeholder);
+    var pat = jrnPattern();
+    var nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+    if (pat && !pat.test(entry.text)) { setLogCount(); return; }
+    list.appendChild(logLineEl(entry));
     while (list.childNodes.length > 500) list.removeChild(list.firstChild);
     if (ui.journal.autoscroll || nearBottom) list.scrollTop = list.scrollHeight;
+    setLogCount();
   }
 
   /* ------------------------- проксированный замер ------------------------ */
@@ -2463,7 +2471,7 @@
       kvRow('Сбоев до переключения', wd.failsToSwitch ? String(wd.failsToSwitch) : '—'),
       kvRow('Последняя проверка', lastT ? fmtAgo(lastT) : '—', lastT ? fmtTime(lastT) : ''),
       kvRow('Поток', wd.running ? 'идёт проверка' : (wd.enabled ? 'ожидание' : 'остановлен')),
-      kvRow('Мёртвых узлов', String((wd.dead || []).length))
+      kvRow('Offline', String((wd.dead || []).length))
     ]);
     body.appendChild(rows);
 
@@ -3288,7 +3296,7 @@
     dead.forEach(function (name) {
       list.appendChild(el('span', {
         class: 'dead-item',
-        title: 'Мёртв по данным сторожа: ' + name
+        title: (LANG === 'en' ? 'Offline per watchdog: ' : 'Offline по данным сторожа: ') + name
       }, [flagForNode(name, 'sm'), el('span', { text: nodeLabel(name) })]));
     });
   }
@@ -4562,6 +4570,40 @@
 
   /* -------------------------------- ЖУРНАЛ -------------------------------- */
 
+  // Поиск по журналу: обычная подстрока или регулярное выражение (кнопка «.*»).
+  function jrnPattern() {
+    var q = String(ui.journal.q || '');
+    if (!q) return null;
+    if (!ui.journal.regex) {
+      var needle = q.toLowerCase();
+      return { test: function (s) { return String(s).toLowerCase().indexOf(needle) >= 0; }, bad: false };
+    }
+    var rx;
+    try {
+      rx = new RegExp(q, 'i');
+    } catch (e) {
+      return { test: function () { return true; }, bad: true };
+    }
+    return { test: function (s) { return rx.test(String(s)); }, bad: false };
+  }
+
+  function jrnNotFound() {
+    return LANG === 'en'
+      ? 'Nothing matches “' + ui.journal.q + '”'
+      : 'Ничего не найдено по запросу «' + ui.journal.q + '»';
+  }
+
+  function setJournalQuery(q) {
+    ui.journal.q = String(q || '');
+    var box = $('jrn-search-box');
+    var pat = jrnPattern();
+    if (box) box.classList.toggle('bad', !!(pat && pat.bad));
+    var clearBtn = $('btn-jrn-q-clear');
+    if (clearBtn) clearBtn.hidden = !ui.journal.q;
+    if (ui.journal.tab === 'logs') renderLogsList();
+    else renderEvents();
+  }
+
   function updateJournalTabs() {
     var tabs = $('jrn-tabs');
     if (tabs) {
@@ -4574,6 +4616,8 @@
     var lgPane = $('jrn-logs-pane');
     if (evPane) evPane.hidden = ui.journal.tab !== 'events';
     if (lgPane) lgPane.hidden = ui.journal.tab !== 'logs';
+    var filters = $('ev-filters');
+    if (filters) filters.hidden = ui.journal.tab !== 'events';
   }
 
   function renderJournal() {
@@ -4582,12 +4626,8 @@
       renderEvents();
       stopLogStream();
     } else {
-      if (!ui.journal.logs.length) {
-        var list = $('log-list');
-        if (list && !list.childNodes.length) {
-          list.appendChild(el('div', { class: 'log-status' }, 'Ожидание строк журнала…'));
-        }
-      }
+      var list = $('log-list');
+      if (list && !list.querySelector('.log-line')) renderLogsList();
       if (ui.view === 'journal' && !document.hidden) startLogStream();
     }
   }
@@ -4608,38 +4648,54 @@
     if (!box) return;
     var st = ui.state;
     var allEvents = st && Array.isArray(st.events) ? st.events : [];
-    var firstT = allEvents.length ? num(allEvents[0] && allEvents[0].t) : 0;
-    var lastT = allEvents.length ? num(allEvents[allEvents.length - 1] && allEvents[allEvents.length - 1].t) : 0;
-    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + ui.journal.filter + '|' + (st ? 1 : 0) +
+    var filter = ui.journal.filter;
+    var pat = jrnPattern();
+    var events = allEvents.slice().sort(function (a, b) { return num(b && b.t) - num(a && a.t); });
+    var filtered = events.filter(function (ev) {
+      if (!ev || !matchEvent(ev, filter)) return false;
+      if (!pat) return true;
+      return pat.test(String(ev.text || '') + ' ' + String(ev.kind || '') + ' ' + String(ev.group || ''));
+    });
+
+    var firstT = events.length ? num(events[0] && events[0].t) : 0;
+    var lastT = events.length ? num(events[events.length - 1] && events[events.length - 1].t) : 0;
+    var sig = allEvents.length + '|' + firstT + '|' + lastT + '|' + filter + '|' + (st ? 1 : 0) + '|' + LANG +
+      '|' + ui.journal.q + '|' + (ui.journal.regex ? 1 : 0) +
       '|' + (ui.drawer.open && ui.drawer.kind === 'event' ? ui.drawer.key : '');
     if (sig === eventsSig && box.childNodes.length) return;
     eventsSig = sig;
 
     var keepScroll = box.scrollTop;
-    var events = allEvents.slice();
-    events.sort(function (a, b) { return num(b && b.t) - num(a && a.t); });
-    var filter = ui.journal.filter;
-    var filtered = events.filter(function (ev) { return ev && matchEvent(ev, filter); });
-
     clear(box);
-    filtered.slice(0, 300).forEach(function (ev) {
+    filtered.slice(0, 300).forEach(function (ev, i) {
       var kind = String(ev.kind || 'info').toLowerCase();
-      if (['info', 'warn', 'bad', 'ok'].indexOf(kind) < 0) kind = 'info';
+      if (['info', 'ok', 'warn', 'bad'].indexOf(kind) < 0) kind = 'info';
       var key = num(ev.t) + '|' + String(ev.text || '');
       var selected = ui.drawer.open && ui.drawer.kind === 'event' && ui.drawer.key === key;
+      var sub = [
+        el('span', { class: 'jrn-dot', 'aria-hidden': 'true' }),
+        el('span', { class: 'jrn-chip ' + kind, text: kind })
+      ];
+      if (ev.group) sub.push(el('span', { class: 'jrn-chip grp', text: ev.group }));
+      sub.push(el('span', { class: 'jrn-t', text: fmtClock(ev.t), title: fmtTime(ev.t) }));
+      sub.push(el('span', { class: 'jrn-dot-sep', 'aria-hidden': 'true', text: '·' }));
+      sub.push(el('span', { class: 'jrn-ago', text: fmtAgo(ev.t) }));
       var row = el('div', {
-        class: 'ev ' + kind + (selected ? ' selected' : ''),
+        class: 'jrn-row ev ' + kind + (selected ? ' selected' : ''),
         role: 'button',
         tabindex: '0',
         'aria-label': 'Подробности события: ' + trim(ev.text || '', 60),
         title: 'Нажмите, чтобы открыть подробности',
         dataset: { key: key }
       }, [
-        el('span', { class: 'ev-t', text: fmtClock(ev.t), title: fmtTime(ev.t) }),
-        el('span', { class: 'ev-kind', text: kind }),
-        ev.group ? el('span', { class: 'ev-group', text: ev.group }) : null,
-        el('span', { class: 'ev-text', text: ev.text || '' }),
-        el('span', { class: 'ev-go', text: '›', 'aria-hidden': 'true' })
+        el('div', { class: 'jrn-main' }, [
+          el('span', { class: 'jrn-i', text: String(i + 1) }),
+          el('span', { class: 'jrn-k', text: t('Событие') }),
+          el('span', { class: 'jrn-sep', text: ':' }),
+          el('span', { class: 'jrn-v', text: ev.text || '' }),
+          el('span', { class: 'jrn-go', text: '›', 'aria-hidden': 'true' })
+        ]),
+        el('div', { class: 'jrn-sub' }, sub)
       ]);
       row.addEventListener('click', function () { openDrawer('event', key, ev); });
       row.addEventListener('keydown', function (e) {
@@ -4652,15 +4708,19 @@
     });
     box.scrollTop = keepScroll;
 
+    var cnt = $('ev-count');
+    if (cnt) {
+      var total = events.length;
+      cnt.textContent = total ? (filtered.length === total ? String(total) : filtered.length + '/' + total) : '';
+    }
+
     var emptyEl = $('ev-empty');
     if (emptyEl) {
       emptyEl.hidden = filtered.length > 0;
       if (!st) emptyEl.textContent = 'Нет данных: демон недоступен.';
       else if (!events.length) emptyEl.textContent = 'Событий пока нет.';
-      else if (!filtered.length) emptyEl.textContent = 'Событий с таким фильтром нет.';
+      else if (!filtered.length) emptyEl.textContent = pat && pat.bad ? 'Неверное регулярное выражение.' : jrnNotFound();
     }
-    var cnt = $('ev-count');
-    if (cnt) cnt.textContent = events.length ? (filter === 'all' ? String(filtered.length) : filtered.length + ' из ' + events.length) : '';
 
     var filters = $('ev-filters');
     if (filters) {
@@ -4674,13 +4734,35 @@
     var list = $('log-list');
     if (!list) return;
     clear(list);
-    if (!ui.journal.logs.length) {
-      list.appendChild(el('div', { class: 'log-status' }, 'Логи пока не получены.'));
-      return;
-    }
+    var pat = jrnPattern();
     var items = ui.journal.logs.slice(-500);
-    for (var i = 0; i < items.length; i++) appendLogLine(items[i]);
+    var shown = 0;
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < items.length; i++) {
+      if (pat && !pat.test(items[i].text)) continue;
+      frag.appendChild(logLineEl(items[i]));
+      shown++;
+    }
+    if (shown) list.appendChild(frag);
+    else if (items.length) {
+      list.appendChild(el('div', {
+        class: 'jrn-empty',
+        text: pat && pat.bad ? 'Неверное регулярное выражение.' : jrnNotFound()
+      }));
+    } else {
+      list.appendChild(el('div', { class: 'jrn-empty', text: 'Логи пока не получены.' }));
+    }
     list.scrollTop = list.scrollHeight;
+    setLogCount();
+  }
+
+  function setLogCount() {
+    var cnt = $('log-count');
+    if (!cnt) return;
+    var list = $('log-list');
+    var shown = list ? list.querySelectorAll('.log-line').length : 0;
+    var all = ui.journal.logs.length;
+    cnt.textContent = all ? (shown === all ? String(all) : shown + '/' + all) : '';
   }
 
   function setJournalTab(tab) {
@@ -5226,6 +5308,8 @@
     ui.journal.logs = [];
     var logList = $('log-list');
     if (logList) clear(logList);
+    setLogCount();
+    eventsSig = '';
     serversSig = null;
     showUpdLog([], false);
     setUpdProgress(null);
@@ -5493,6 +5577,38 @@
       ui.journal.filter = b.dataset.filter;
       renderEvents();
     });
+    var jrnQ = $('jrn-search');
+    if (jrnQ) {
+      jrnQ.value = ui.journal.q || '';
+      jrnQ.addEventListener('input', function () { setJournalQuery(jrnQ.value); });
+      jrnQ.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') { e.preventDefault(); jrnQ.value = ''; setJournalQuery(''); }
+      });
+    }
+    var jrnRegexBtn = $('btn-jrn-regex');
+    if (jrnRegexBtn) {
+      jrnRegexBtn.classList.toggle('on', !!ui.journal.regex);
+      jrnRegexBtn.setAttribute('aria-pressed', ui.journal.regex ? 'true' : 'false');
+      jrnRegexBtn.addEventListener('click', function () {
+        ui.journal.regex = !ui.journal.regex;
+        jrnRegexBtn.classList.toggle('on', ui.journal.regex);
+        jrnRegexBtn.setAttribute('aria-pressed', ui.journal.regex ? 'true' : 'false');
+        setJournalQuery(ui.journal.q);
+      });
+    }
+    var jrnQClear = $('btn-jrn-q-clear');
+    if (jrnQClear) jrnQClear.addEventListener('click', function () {
+      if (jrnQ) { jrnQ.value = ''; try { jrnQ.focus(); } catch (e) { /* ignore */ } }
+      setJournalQuery('');
+    });
+    var logClear = $('btn-log-clear');
+    if (logClear) logClear.addEventListener('click', function () {
+      ui.journal.logs = [];
+      var list = $('log-list');
+      if (list) clear(list);
+      setLogCount();
+      setLogStatus('очищено · ' + (ui.journal.tab === 'logs' ? 'ожидание строк' : ''));
+    });
     var logLevel = $('log-level');
     if (logLevel) logLevel.addEventListener('change', function () {
       ui.journal.logLevel = logLevel.value;
@@ -5501,13 +5617,6 @@
     var logAutoscroll = $('log-autoscroll');
     if (logAutoscroll) logAutoscroll.addEventListener('change', function () {
       ui.journal.autoscroll = !!logAutoscroll.checked;
-    });
-    var logClear = $('btn-log-clear');
-    if (logClear) logClear.addEventListener('click', function () {
-      ui.journal.logs = [];
-      var list = $('log-list');
-      if (list) clear(list);
-      setLogStatus('очищено · ' + (ui.journal.tab === 'logs' ? 'ожидание строк' : ''));
     });
 
     var langBtn = $('btn-lang');

@@ -1938,83 +1938,229 @@ main#views { padding: 18px; }
 
 /* -------------------------------- журнал -------------------------------- */
 
-.events {
+/* Журнал повторяет вид «правил»: строка с номером, «ключ : значение» и вторая
+   линия с состоянием, группой и временем. Логи — те же строки в одну линию. */
+
+.jrn-bar {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-height: calc(100vh - 300px);
-  overflow: auto;
-}
-.ev {
-  display: flex;
-  align-items: baseline;
-  gap: 6px 10px;
+  align-items: center;
+  gap: 10px;
   flex-wrap: wrap;
-  padding: 6px 9px;
-  border-radius: 8px;
-  border-left: 2px solid var(--accent);
-  background: var(--inset);
+}
+
+.jrn-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 300px;
+  max-width: 440px;
+  height: 34px;
+  padding: 0 6px 0 10px;
+  background: var(--input);
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  transition: border-color .14s, box-shadow .14s;
+}
+.jrn-search:focus-within { border-color: var(--accent-line); box-shadow: 0 0 0 2px rgba(var(--accent-rgb), .14); }
+.jrn-search.bad { border-color: rgba(var(--bad-rgb), .55); }
+.jrn-search.bad .jrn-q { color: var(--bad-txt); }
+.jrn-search-ico { flex: 0 0 auto; width: 14px; height: 14px; color: var(--dim); }
+.jrn-q {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  color: var(--txt);
+  font: inherit;
   font-size: 12.5px;
 }
-.ev.warn { border-left-color: var(--warn); background: rgba(var(--warn-rgb), .06); }
-.ev.bad { border-left-color: var(--bad); background: rgba(var(--bad-rgb), .07); }
-.ev.ok { border-left-color: var(--ok); background: rgba(var(--ok-rgb), .06); }
-.ev-t { font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; flex: 0 0 auto; }
-.ev-kind {
+.jrn-q::placeholder { color: var(--dim); }
+.jrn-regex {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  color: var(--dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.jrn-regex:hover { color: var(--txt-2); border-color: var(--line); }
+.jrn-regex.on {
+  color: var(--accent-txt);
+  border-color: rgba(var(--accent-rgb), .4);
+  background: rgba(var(--accent-rgb), .12);
+}
+.jrn-x {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+.jrn-x:hover { color: var(--txt); background: var(--icon-btn-hover); }
+
+.seg-count {
+  margin-left: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  opacity: .8;
+}
+
+.jrn-card {
+  background: var(--card);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.jrn-card .jrn-list {
+  max-height: calc(100vh - 310px);
+  overflow: auto;
+}
+.jrn-list { display: flex; flex-direction: column; }
+
+.jrn-row {
+  padding: 8px 12px 9px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  transition: background .12s;
+}
+.jrn-row:last-child { border-bottom: 0; }
+.jrn-row:hover { background: var(--row-hover); }
+.jrn-row.selected { background: rgba(var(--accent-rgb), .07); box-shadow: inset 2px 0 0 var(--accent); }
+.jrn-row:focus-visible { outline: 2px solid rgba(var(--accent-rgb), .5); outline-offset: -2px; }
+
+.jrn-main { display: flex; align-items: baseline; gap: 7px; }
+.jrn-i {
+  flex: 0 0 22px;
+  text-align: right;
+  font-size: 10.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.jrn-k { flex: 0 0 auto; font-size: 11.5px; color: var(--muted); }
+.jrn-sep { flex: 0 0 auto; color: var(--dim); }
+.jrn-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--txt);
+  word-break: break-word;
+}
+.jrn-go { flex: 0 0 auto; color: var(--dim); font-size: 12px; }
+
+.jrn-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  padding: 5px 0 0 29px;
+}
+.jrn-dot {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--dim);
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), .1);
+}
+.jrn-row.ok .jrn-dot { background: var(--ok); box-shadow: 0 0 0 3px rgba(var(--ok-rgb), .14); }
+.jrn-row.warn .jrn-dot { background: var(--warn); box-shadow: 0 0 0 3px rgba(var(--warn-rgb), .14); }
+.jrn-row.bad .jrn-dot { background: var(--bad); box-shadow: 0 0 0 3px rgba(var(--bad-rgb), .14); }
+
+.jrn-chip {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--muted);
   font-size: 9.5px;
   letter-spacing: .06em;
   text-transform: uppercase;
-  color: var(--muted);
-  border: 1px solid var(--line);
-  border-radius: 5px;
-  padding: 0 4px;
-  flex: 0 0 auto;
+  white-space: nowrap;
 }
-.ev.warn .ev-kind { color: var(--warn-txt); border-color: rgba(var(--warn-rgb), .3); }
-.ev.bad .ev-kind { color: var(--bad-txt); border-color: rgba(var(--bad-rgb), .3); }
-.ev.ok .ev-kind { color: var(--ok-txt); border-color: rgba(var(--ok-rgb), .3); }
-.ev-text { color: var(--txt-2); word-break: break-word; flex: 1 1 240px; min-width: 0; }
-.ev-group { font-size: 10.5px; color: var(--dim); }
-
-.log-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.log-tools .select { width: auto; font-size: 11.5px; padding: 5px 26px 5px 9px; }
-.log-status { color: var(--dim); font-family: var(--mono); font-size: 11px; }
-
-.logs {
-  height: calc(100vh - 350px);
-  min-height: 200px;
-  overflow: auto;
+.jrn-chip.ok { color: var(--ok-txt); border-color: rgba(var(--ok-rgb), .3); background: rgba(var(--ok-rgb), .09); }
+.jrn-chip.warn { color: var(--warn-txt); border-color: rgba(var(--warn-rgb), .3); background: rgba(var(--warn-rgb), .09); }
+.jrn-chip.bad { color: var(--bad-txt); border-color: rgba(var(--bad-rgb), .3); background: rgba(var(--bad-rgb), .09); }
+.jrn-chip.info { color: var(--muted); }
+.jrn-chip.grp {
+  color: var(--accent-txt);
+  border-color: rgba(var(--accent-rgb), .26);
+  background: rgba(var(--accent-rgb), .08);
   font-family: var(--mono);
-  font-size: 12px;
-  background: var(--log-bg);
-  border: 1px solid var(--line-soft);
-  border-radius: 9px;
-  padding: 8px 10px;
+  letter-spacing: .02em;
+  text-transform: none;
 }
-.log-line { display: flex; gap: 8px; padding: 1px 0; line-height: 1.42; }
-.log-t { color: var(--dim); flex: 0 0 auto; font-size: 10.5px; padding-top: 1px; }
+.jrn-t {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+.jrn-dot-sep { color: var(--dim); font-size: 10px; opacity: .7; }
+.jrn-ago { font-size: 10.5px; color: var(--dim); white-space: nowrap; }
+.jrn-empty { padding: 20px 14px; text-align: center; color: var(--dim); font-size: 12px; }
+
+/* логи — те же строки, но одной линией: время, уровень, сообщение */
+.jrn-logbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--inset);
+}
+.log-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.log-tools .select { width: auto; font-size: 11.5px; padding: 4px 24px 4px 8px; }
+.jrn-level { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+.log-status { color: var(--muted); font-family: var(--mono); font-size: 11px; }
+
+.jrn-logs { font-family: var(--mono); font-size: 12px; }
+.log-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 12px 3px 10px;
+}
+.log-t { flex: 0 0 auto; font-size: 10.5px; color: var(--dim); font-variant-numeric: tabular-nums; }
 .log-lvl {
-  flex: 0 0 54px;
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
   font-size: 9.5px;
-  letter-spacing: .04em;
+  letter-spacing: .05em;
   text-transform: uppercase;
-  padding-top: 2px;
 }
 .log-lvl.debug { color: var(--muted); }
-.log-lvl.info { color: var(--accent-txt); }
-.log-lvl.warning { color: var(--warn); }
-.log-lvl.error { color: var(--bad); }
+.log-lvl.info { color: var(--accent-txt); border-color: rgba(var(--accent-rgb), .28); background: rgba(var(--accent-rgb), .07); }
+.log-lvl.warning { color: var(--warn-txt); border-color: rgba(var(--warn-rgb), .3); background: rgba(var(--warn-rgb), .09); }
+.log-lvl.error { color: var(--bad-txt); border-color: rgba(var(--bad-rgb), .32); background: rgba(var(--bad-rgb), .1); }
 .log-msg {
   flex: 1 1 auto;
   min-width: 0;
   color: var(--txt-2);
+  line-height: 1.45;
   white-space: pre-wrap;
   word-break: break-word;
 }
-.log-line.warning .log-msg { color: var(--warn-txt); }
-.log-line.error .log-msg { color: var(--bad-txt); }
-.log-line.warning { background: rgba(var(--warn-rgb), .04); }
-.log-line.error { background: rgba(var(--bad-rgb), .05); }
+.log-line.warning { background: rgba(var(--warn-rgb), .05); }
+.log-line.error { background: rgba(var(--bad-rgb), .06); }
 
 /* ------------------------------- настройки ------------------------------ */
 
@@ -2620,15 +2766,7 @@ main#views { padding: 18px; }
 .table tbody tr.selected td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .conn-row:focus-visible { outline: 2px solid rgba(var(--accent-rgb), .6); outline-offset: -2px; }
 
-/* журнал: кликабельные события и строки логов */
-.ev { cursor: pointer; transition: box-shadow .14s, background .14s; }
-.ev:hover { box-shadow: inset 0 0 0 1px var(--line-strong); }
-.ev.selected { box-shadow: inset 0 0 0 1px rgba(var(--accent-rgb), .55); }
-.ev:focus-visible { outline: 2px solid rgba(var(--accent-rgb), .6); outline-offset: 1px; }
-.ev-go { margin-left: auto; color: var(--dim); font-size: 11px; flex: 0 0 auto; }
-.log-line { cursor: pointer; border-radius: 5px; transition: background .15s; }
-.log-line:hover { background: rgba(var(--accent-rgb), .09); }
-.log-line:focus-visible { outline: 2px solid rgba(var(--accent-rgb), .55); outline-offset: -1px; }
+/* журнал: кликабельные строки уже описаны выше (.jrn-row), здесь — подсказка */
 .log-hint {
   display: flex;
   gap: 8px;
@@ -2657,12 +2795,9 @@ main#views { padding: 18px; }
 :root[data-theme="light"] .badge.warn { background: rgba(var(--warn-rgb), .13); }
 :root[data-theme="light"] .badge.bad { background: rgba(var(--bad-rgb), .1); }
 :root[data-theme="light"] .gtab { background: var(--card); }
-:root[data-theme="light"] .ev { background: var(--card-2); }
-:root[data-theme="light"] .ev.warn { background: rgba(var(--warn-rgb), .08); }
-:root[data-theme="light"] .ev.bad { background: rgba(var(--bad-rgb), .08); }
-:root[data-theme="light"] .ev.ok { background: rgba(var(--ok-rgb), .08); }
+:root[data-theme="light"] .jrn-card { box-shadow: 0 1px 2px rgba(15, 23, 42, .06); }
+:root[data-theme="light"] .jrn-dot { box-shadow: 0 0 0 3px rgba(15, 23, 42, .06); }
 :root[data-theme="light"] .toast { color: var(--txt); }
-:root[data-theme="light"] .logs { background: var(--log-bg); }
 :root[data-theme="light"] .upd-log { background: var(--log-bg); }
 :root[data-theme="light"] .gauge::after { background: var(--card); }
 :root[data-theme="light"] .skel { background: linear-gradient(90deg, #e8eef6 25%, #f4f7fb 50%, #e8eef6 75%); background-size: 200% 100%; }
@@ -2712,8 +2847,8 @@ main#views { padding: 18px; }
   .view { gap: 13px; }
   .view-head h1 { font-size: 17px; }
   .table-wrap { max-height: none; }
-  .events { max-height: none; }
-  .logs { height: calc(100vh - 330px); }
+  .jrn-card .jrn-list { max-height: none; }
+  .jrn-logs { max-height: 60vh; }
 
   .banner { padding: 9px 12px; }
   #banner-retry { margin-left: 0; }
@@ -2854,7 +2989,9 @@ main#views { padding: 18px; }
 @media (max-width: 420px) {
   .brand-txt b { font-size: 15px; }
   .metric { flex: 1 1 40%; }
-  .log-lvl { flex-basis: 44px; }
+  .jrn-i { display: none; }
+  .jrn-sub { padding-left: 0; }
+  .jrn-search { max-width: none; }
 }
 
 /* ------------------------------- анимации ------------------------------- */

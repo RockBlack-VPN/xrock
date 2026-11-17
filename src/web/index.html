@@ -239,7 +239,7 @@
 
         <article class="card dead-card" id="srv-dead-wrap" hidden>
           <header class="card-h">
-            <h2 data-ico="reject">Мёртвые узлы <span class="badge bad" id="srv-dead-count"></span></h2>
+            <h2 data-ico="reject">Offline <span class="badge bad" id="srv-dead-count"></span></h2>
             <span class="hint">по данным сторожа</span>
           </header>
           <div class="card-b" id="srv-dead"></div>
@@ -332,51 +332,56 @@
       </section>
 
       <!-- ================= ЖУРНАЛ ================= -->
+      <!-- Строки — как правила: номер, «ключ : значение», вторая строка с
+           состоянием и временем. Сверху — вкладки со счётчиками и поиск. -->
       <section class="view" id="view-journal" data-view="journal" hidden>
         <div class="view-head">
           <h1>Журнал</h1>
           <div class="actions">
-            <div class="seg" id="jrn-tabs" role="tablist">
-              <button type="button" class="seg-btn active" data-tab="events" role="tab">События</button>
-              <button type="button" class="seg-btn" data-tab="logs" role="tab">Логи mihomo</button>
+            <div class="seg jrn-tabs" id="jrn-tabs" role="tablist">
+              <button type="button" class="seg-btn active" data-tab="events" role="tab" aria-selected="true">События <b class="seg-count" id="ev-count"></b></button>
+              <button type="button" class="seg-btn" data-tab="logs" role="tab" aria-selected="false">Логи mihomo <b class="seg-count" id="log-count"></b></button>
             </div>
           </div>
         </div>
 
-        <div class="card" id="jrn-events-pane">
-          <header class="card-h">
-            <h2 data-ico="proxy">События <span class="badge" id="ev-count"></span></h2>
-            <div class="seg small" id="ev-filters">
-              <button type="button" class="seg-btn active" data-filter="all">Все</button>
-              <button type="button" class="seg-btn" data-filter="fail">Сбои</button>
-              <button type="button" class="seg-btn" data-filter="switch">Переключения</button>
-            </div>
-          </header>
-          <div class="card-b">
-            <div class="events" id="ev-list"></div>
-            <div class="empty" id="ev-empty" hidden>Событий пока нет.</div>
+        <div class="jrn-bar">
+          <div class="jrn-search" id="jrn-search-box">
+            <svg class="jrn-search-ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="6.8" cy="6.8" r="4.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m10 10 3.6 3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <input class="jrn-q" id="jrn-search" type="text" placeholder="Поиск | Regex" aria-label="Поиск по журналу" autocomplete="off" spellcheck="false">
+            <button type="button" class="jrn-regex" id="btn-jrn-regex" title="Искать как регулярное выражение" aria-pressed="false">.*</button>
+            <button type="button" class="jrn-x" id="btn-jrn-q-clear" title="Очистить поиск" aria-label="Очистить поиск" hidden>×</button>
+          </div>
+          <div class="seg small" id="ev-filters" role="group" aria-label="Фильтр событий">
+            <button type="button" class="seg-btn active" data-filter="all">Все</button>
+            <button type="button" class="seg-btn" data-filter="fail">Сбои</button>
+            <button type="button" class="seg-btn" data-filter="switch">Переключения</button>
           </div>
         </div>
 
-        <div class="card" id="jrn-logs-pane" hidden>
-          <header class="card-h">
-            <h2 data-ico="server">Логи mihomo</h2>
+        <div class="jrn-card" id="jrn-events-pane">
+          <div class="jrn-list" id="ev-list"></div>
+          <div class="empty" id="ev-empty" hidden>Событий пока нет.</div>
+        </div>
+
+        <div class="jrn-card" id="jrn-logs-pane" hidden>
+          <div class="jrn-logbar">
+            <span class="log-status" id="log-status">поток не подключён</span>
             <div class="log-tools">
-              <select class="input select" id="log-level" aria-label="Уровень логов">
-                <option value="debug">debug</option>
-                <option value="info" selected>info</option>
-                <option value="warning">warning</option>
-                <option value="error">error</option>
-              </select>
+              <label class="jrn-level"><span>уровень</span>
+                <select class="input select" id="log-level" aria-label="Уровень логов">
+                  <option value="debug">debug</option>
+                  <option value="info" selected>info</option>
+                  <option value="warning">warning</option>
+                  <option value="error">error</option>
+                </select>
+              </label>
               <label class="check small"><input type="checkbox" id="log-autoscroll" checked> автоскролл</label>
               <button type="button" class="btn small" id="btn-log-clear">Очистить</button>
             </div>
-          </header>
-          <div class="card-b">
-            <div class="log-status small" id="log-status">поток не подключён</div>
-            <div class="logs" id="log-list"></div>
-            <div class="log-hint" id="log-hint" hidden></div>
           </div>
+          <div class="jrn-list jrn-logs" id="log-list"></div>
+          <div class="log-hint" id="log-hint" hidden></div>
         </div>
       </section>
 
