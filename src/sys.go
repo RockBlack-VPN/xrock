@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,6 +34,7 @@ type sysInfo struct {
 	Arch       string       `json:"arch"`
 	Model      string       `json:"model"`
 	Cores      int          `json:"cores"`
+	Goroutines int          `json:"goroutines"`
 	// сколько памяти занимают сами процессы (кБ) — чтобы «62%» не путали с панелью
 	SelfRssKb   int64 `json:"selfRssKb"`
 	MihomoRssKb int64 `json:"mihomoRssKb"`
@@ -186,6 +188,7 @@ func deviceModel() string {
 // handleSys — GET /api/sys.
 func (a *app) handleSys(w http.ResponseWriter, r *http.Request) {
 	info := sysInfo{OK: true, Arch: runtime.GOARCH, Cores: runtime.NumCPU()}
+	info.Goroutines = runtime.NumGoroutine()
 	info.Load1 = readLoad1()
 	info.UptimeSec = readUptime()
 	info.Model = deviceModel()
@@ -279,10 +282,18 @@ func (a *app) sysLoop() {
 	cpuTimes() // прогрев: запоминаем тики
 	t := time.NewTicker(5 * time.Second)
 	defer t.Stop()
+	var lastWarn int64
 	for range t.C {
 		idle, total := cpuTimes()
 		cpuMu.Lock()
 		cpuPrevIdle, cpuPrevTotal = idle, total
 		cpuMu.Unlock()
+
+		// Диагностика утечек: много горутин — обычно висящие SSE-потоки.
+		// Пишем в журнал не чаще раза в 5 минут, чтобы не засорять лог.
+		if n := runtime.NumGoroutine(); n > 200 && time.Now().Unix()-lastWarn > 300 {
+			lastWarn = time.Now().Unix()
+			log.Printf("много горутин: %d (проверьте висящие потоки /api/stream/*)", n)
+		}
 	}
 }

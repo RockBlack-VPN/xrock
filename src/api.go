@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io/fs"
 	"net/http"
@@ -116,8 +117,13 @@ func (a *app) handleState(w http.ResponseWriter, r *http.Request) {
 	resp := stateResp{OK: true, Version: version, Now: time.Now().Unix(), Started: a.started.Unix(),
 		Groups: []groupResp{}, Proxies: []proxyResp{}, Providers: []providerResp{}, Events: []event{}}
 
+	// адрес/секрет клиента читаем ДО взятия a.mu: внутри client.mu, и вложенный
+	// захват локов в обратном порядке — это потенциальный дедлок
+	apiURL := a.cl.baseURL()
+	hasSecret := a.cl.authSecret() != ""
+
 	a.mu.Lock()
-	resp.Mihomo = map[string]any{"version": a.mihomoVer, "api": a.cl.baseURL(), "secret": a.cl.authSecret() != ""}
+	resp.Mihomo = map[string]any{"version": a.mihomoVer, "api": apiURL, "secret": hasSecret}
 	resp.Stats = a.st.Stats
 	resp.Events = append([]event{}, a.st.Events...)
 	if len(resp.Events) > 80 {
@@ -486,10 +492,9 @@ func (a *app) handleStreamTraffic(w http.ResponseWriter, r *http.Request) {
 			}
 			a.mu.Unlock()
 		}
-		w.Write([]byte("data: "))
-		w.Write(line)
-		w.Write([]byte("\n\n"))
-		fl.Flush()
+		if err := sseWrite(w, fl, ctx, line); err != nil {
+			return
+		}
 	}
 }
 
@@ -526,11 +531,34 @@ func (a *app) handleStreamLogs(w http.ResponseWriter, r *http.Request) {
 		if len(line) == 0 {
 			continue
 		}
-		w.Write([]byte("data: "))
-		w.Write(line)
-		w.Write([]byte("\n\n"))
-		fl.Flush()
+		if err := sseWrite(w, fl, ctx, line); err != nil {
+			return
+		}
 	}
+}
+
+// sseWrite отправляет одну строку в SSE-поток и возвращает ошибку, если писать
+// больше некуда. Раньше ошибки игнорировались: браузер закрывал вкладку или ПК
+// уходил в сон, а обработчик продолжал вечно читать mihomo и писать в мёртвый
+// сокет — так за часы накапливались сотни «полузакрытых» соединений, и демон
+// переставал отвечать. Дедлайн на запись не даёт зависнуть и в этом случае.
+func sseWrite(w http.ResponseWriter, fl http.Flusher, ctx context.Context, line []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		return err
+	}
+	if _, err := w.Write(line); err != nil {
+		return err
+	}
+	if _, err := w.Write([]byte("\n\n")); err != nil {
+		return err
+	}
+	fl.Flush()
+	return nil
 }
 
 // uiHandler — статика интерфейса: встроенная (embed) или из -ui.
