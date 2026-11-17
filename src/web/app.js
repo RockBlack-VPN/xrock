@@ -4394,14 +4394,13 @@
       applyRulesResponse(res, res && Array.isArray(res.rules) ? res.rules : []);
       ui.rules.at = Date.now();
       ui.rules.err = '';
-      renderRules();
       toast((enabled ? 'Правило включено: ' : 'Правило отключено: ') + (rule.type + ' ' + rule.payload).trim(), 'ok', 3500);
       setTimeout(function () { pollState(); }, 1200);
     } catch (e) {
       toast('Не удалось изменить правило: ' + friendlyError(e), 'bad', 6000);
-      renderRules();
     } finally {
       ui.rules.busy = false;
+      renderRules();
     }
   }
 
@@ -4415,7 +4414,6 @@
       applyRulesResponse(res, res && Array.isArray(res.rules) ? res.rules : []);
       ui.rules.at = Date.now();
       ui.rules.err = '';
-      renderRules();
       toast('Правило добавлено: ' + type + ' ' + payload + ' → ' + proxy, 'ok', 4000);
       setTimeout(function () { pollState(); }, 1200);
       return true;
@@ -4425,6 +4423,7 @@
     } finally {
       ui.rules.busy = false;
       setBusy(btn, false);
+      renderRules();
     }
   }
 
@@ -4454,6 +4453,7 @@
     var body = $('rules-body');
     if (!body) return;
     var sig = (ui.rules.at || 0) + '|' + ui.rules.list.length + '|' + (ui.rules.err || '') + '|' + (ui.rules.search || '') +
+      '|' + (ui.rules.busy ? 1 : 0) + '|' + (ui.rules.editable ? 1 : 0) +
       '|' + ui.rules.list.map(function (r) { return r.disabled ? '0' : '1'; }).join('');
     if (sig === rulesSig && body.childNodes.length) return;
     rulesSig = sig;
