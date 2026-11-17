@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-const version = "0.4.8"
+const version = "0.4.9"
 
 var (
 	flagListen  = flag.String("listen", "0.0.0.0:9091", "адрес панели xrock")
