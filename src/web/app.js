@@ -854,6 +854,36 @@
     return 'http://' + host + ':9091';
   }
 
+  // Панель может отдавать сам демон — в том числе через опубликованный в
+  // Keenetic https-порт (external-ui тут ни при чём: демон отдаёт UI сам).
+  // Тогда API живёт на том же адресе, что и страница: подхватываем его, иначе
+  // приходится вписывать адрес руками, а с https-страницы http-демон ещё и
+  // блокируется браузером (mixed content).
+  function probeOwnOrigin() {
+    if (location.protocol !== 'http:' && location.protocol !== 'https:') return Promise.resolve('');
+    var origin = location.origin;
+    if (!origin || origin === 'null') return Promise.resolve('');
+    var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = ctrl ? setTimeout(function () { try { ctrl.abort(); } catch (e) {} }, 2500) : null;
+    return fetch(origin + '/api/ping', {
+      method: 'GET',
+      cache: 'no-store',
+      credentials: 'omit',
+      headers: { 'Accept': 'application/json' },
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    }).then(function (data) {
+      return data && data.ok ? origin : '';
+    }).catch(function () {
+      return '';
+    }).then(function (v) {
+      if (timer) clearTimeout(timer);
+      return v;
+    });
+  }
+
   function readSavedApi() {
     try { return localStorage.getItem(API_KEY) || ''; } catch (e) { return ''; }
   }
@@ -5744,7 +5774,23 @@
   /* --------------------------------- старт ------------------------------- */
 
   function init() {
-    ui.api = normBase(readSavedApi()) || defaultBase();
+    var saved = normBase(readSavedApi());
+    // с https-страницы http-адрес демона браузер всё равно заблокирует —
+    // такой сохранённый адрес считаем негодным и ищем демона на своём origin
+    var mixed = location.protocol === 'https:' && saved.indexOf('http://') === 0;
+    var boot = (!saved || mixed) ? probeOwnOrigin() : Promise.resolve('');
+    boot.then(function (own) {
+      if (own) {
+        ui.api = own;
+        saveApi(own);
+      } else {
+        ui.api = saved || defaultBase();
+      }
+      startApp();
+    });
+  }
+
+  function startApp() {
     ui.pendingSelect = Object.create(null);
     document.documentElement.lang = LANG;
     document.title = LANG === 'en' ? 'xrock — mihomo panel' : 'xrock — панель mihomo';
