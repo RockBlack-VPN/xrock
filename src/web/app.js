@@ -5786,6 +5786,13 @@
       form.hidden = !form.hidden;
       if (!form.hidden) {
         fillRuleTargets();
+        // по умолчанию — через VPN: случайно добавленное правило не должно
+        // пускать трафик напрямую
+        var proxySel = $('rule-proxy');
+        if (proxySel) {
+          var hasProxy = Array.prototype.some.call(proxySel.options, function (o) { return o.value === 'PROXY'; });
+          if (hasProxy) proxySel.value = 'PROXY';
+        }
         var p = $('rule-payload');
         if (p) { try { p.focus(); } catch (e) {} }
       }
